@@ -1,0 +1,41 @@
+module: examples.lists
+
+constants:
+  nums: [1, 2, 3]
+
+functions:
+  firstNumber:
+    input:
+      xs: list<number>
+    output: number
+    return: first(xs)
+
+  listLength:
+    input: { xs: list<number> }
+    output: number
+    return: length(xs)
+
+  addOne:
+    input: { x: number }
+    output: number
+    return: x + 1
+
+  incrementAll:
+    input: { xs: list<number> }
+    output: list<number>
+    return: map(xs, addOne)
+
+  addLast:
+    input: { xs: list<number>, x: number }
+    output: list<number>
+    return: append(xs, x)
+
+  addFirst:
+    input: { xs: list<number>, x: number }
+    output: list<number>
+    return: prepend(x, xs)
+
+  tailOfList:
+    input: { xs: list<number> }
+    output: list<number>
+    return: rest(xs)

@@ -1,0 +1,7 @@
+module: examples.syntax
+
+functions:
+  fail:
+    input: { x: number }
+    output: number
+    return: x + + 1

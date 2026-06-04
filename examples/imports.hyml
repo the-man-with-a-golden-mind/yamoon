@@ -1,0 +1,10 @@
+module: examples.imports
+
+imports:
+  - "/+  dbug, default-agent"
+  - "/-  *store"
+
+functions:
+  test:
+    output: number
+    return: 1

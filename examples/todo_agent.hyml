@@ -1,0 +1,62 @@
+module: examples.todo
+
+options:
+  target: gall
+
+state:
+  version: 0
+  data:
+    tasks: list<Task>
+    nextId: number
+
+types:
+  Task:
+    kind: record
+    fields:
+      id: number
+      title: text
+      done: bool
+
+macros:
+  newTask:
+    args: [id, title]
+    expand:
+      Task:
+        id: id
+        title: title
+        done: false
+
+on_load:
+  let: { old_state: "((unit state) (mole [old state]))" }
+  in:
+    if: old_state == ~
+    then: pure(initialState)
+    else: pure(first(old_state))
+
+constants:
+  initialState:
+    tasks: []
+    nextId: 1
+
+pokes:
+  addTask:
+    mark: todo-action
+    input: { title: text }
+    return:
+      let: { t: "newTask(state.nextId, title)" }
+      in:
+        pure:
+          state:
+            tasks: "prepend(t, state.tasks)"
+            nextId: "state.nextId + 1"
+
+watches:
+  /updates: pure(state)
+
+scries:
+  /tasks:
+    output: list<Task>
+    return: state.tasks
+  /nextId:
+    output: number
+    return: state.nextId

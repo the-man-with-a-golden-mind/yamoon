@@ -1,0 +1,18 @@
+module: examples.math
+
+functions:
+  allOps:
+    input:
+      a: number
+      b: number
+    output: bool
+    return:
+      if: (a + b) * 2 > 100
+      then: true
+      else: a != b
+
+  complex:
+    input:
+      x: number
+    output: number
+    return: x * (x + 1) - 10

@@ -1,0 +1,18 @@
+module: examples.basic
+
+functions:
+  square:
+    input: { n: number }
+    output: number
+    return: n * n
+
+tests:
+  square_logic:
+    kind: unit
+    func: square
+    cases:
+      - input: { n: 4 }
+        expect: 16
+      - input: { n: 0 }
+        expect: 0
+    fuzz: true

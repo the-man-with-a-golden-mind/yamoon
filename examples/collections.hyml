@@ -1,0 +1,21 @@
+module: examples.collections
+
+types:
+  Registry: map<text, number>
+  TagSet: set<text>
+
+functions:
+  lookup:
+    input: { reg: Registry, key: text }
+    output: number?
+    return: get(reg, key)
+
+  update:
+    input: { reg: Registry, key: text, val: number }
+    output: Registry
+    return: put(reg, key, val)
+
+  checkTag:
+    input: { tags: TagSet, tag: text }
+    output: bool
+    return: has(tags, tag)

@@ -1,0 +1,7 @@
+module: examples.error
+
+functions:
+  fail:
+    input: { x: number }
+    output: text
+    return: x + 1

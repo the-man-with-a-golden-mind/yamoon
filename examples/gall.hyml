@@ -1,0 +1,9 @@
+module: examples.gall
+
+options:
+  target: gall
+
+functions:
+  on-init:
+    output: number
+    return: 42

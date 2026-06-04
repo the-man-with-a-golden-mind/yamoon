@@ -1,0 +1,13 @@
+module: examples.raw
+
+constants:
+  custom:
+    hoon: "(add 1 2)"
+
+functions:
+  special:
+    input:
+      x: number
+    output: number
+    return:
+      hoon: "(add x (mul x 2))"

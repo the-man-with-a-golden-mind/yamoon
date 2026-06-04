@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Yamoon IDE</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.44.0/min/vs/loader.min.js"></script>
+  <style>
+    body { margin: 0; padding: 0; height: 100vh; overflow: hidden; }
+    #editor-container { width: 100%; height: 100%; }
+  </style>
+</head>
+<body class="bg-gray-900 text-white flex flex-col">
+  <div id="app" class="flex-grow flex flex-col overflow-hidden"></div>
+  <script src="/elm.js"></script>
+  <script>
+    const app = Elm.Main.init({
+      node: document.getElementById('app'),
+      flags: {
+        apiUrl: window.location.origin
+      }
+    })
+
+    require.config({ paths: { 'vs': 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.44.0/min/vs' } });
+    require(['vs/editor/editor.main'], function() {
+      // Define Yamoon language
+      monaco.languages.register({ id: 'yamoon' });
+      monaco.languages.setMonarchTokensProvider('yamoon', {
+        tokenizer: {
+          root: [
+            [/module:|options:|types:|macros:|state:|pokes:|scries:|constants:|functions:|tests:|kind:|fields:|variants:|version:|data:|mark:|input:|return:|setup:|steps:|action:|route:|payload:|expect:|cards:|scries:|state:|from_version:|old_state:|expect_state:/, 'keyword'],
+            [/\b(number|nat|text|bool|card|list|pair|quip|map|set)\b/, 'type'],
+            [/\b(if|then|else|if_not|assert|unless|set|match|cases|default|loop|let|in|recurse|pure|first|rest|prepend|append|map|filter|fold|get|put|has|scot|scry|nock)\b/, 'keyword'],
+            [/[{}()\[\],:]/, 'delimiter'],
+            [/[0-9]+/, 'number'],
+            [/"[^"]*"/, 'string'],
+            [/'[^']*'/, 'string'],
+            [/\/\+.*|\/-.*|\/lib.*/, 'tag'],
+            [/::.*/, 'comment'],
+          ]
+        }
+      });
+
+      // Custom themes
+      monaco.editor.defineTheme('solarized', {
+        base: 'vs',
+        inherit: true,
+        rules: [
+          { token: 'keyword', foreground: '859900' },
+          { token: 'type', foreground: 'b58900' },
+          { token: 'string', foreground: '2aa198' },
+          { token: 'number', foreground: 'd33682' },
+          { token: 'comment', foreground: '586e75', fontStyle: 'italic' },
+        ],
+        colors: {
+          'editor.background': '#fdf6e3',
+        }
+      });
+
+      monaco.editor.defineTheme('monokai', {
+        base: 'vs-dark',
+        inherit: true,
+        rules: [
+          { token: 'keyword', foreground: 'f92672' },
+          { token: 'type', foreground: '66d9ef' },
+          { token: 'string', foreground: 'e6db74' },
+          { token: 'number', foreground: 'ae81ff' },
+          { token: 'comment', foreground: '75715e', fontStyle: 'italic' },
+        ],
+        colors: {
+          'editor.background': '#272822',
+        }
+      });
+
+      monaco.languages.registerCompletionItemProvider('yamoon', {
+        provideCompletionItems: () => {
+          const suggestions = [
+            { label: 'module', kind: monaco.languages.CompletionItemKind.Keyword, insertText: 'module: ' },
+            { label: 'functions', kind: monaco.languages.CompletionItemKind.Keyword, insertText: 'functions:\n  ' },
+            { label: 'types', kind: monaco.languages.CompletionItemKind.Keyword, insertText: 'types:\n  ' },
+            { label: 'pokes', kind: monaco.languages.CompletionItemKind.Keyword, insertText: 'pokes:\n  ' },
+            { label: 'scries', kind: monaco.languages.CompletionItemKind.Keyword, insertText: 'scries:\n  ' },
+            { label: 'state', kind: monaco.languages.CompletionItemKind.Keyword, insertText: 'state:\n  version: 0\n  data:\n    ' },
+            { label: 'number', kind: monaco.languages.CompletionItemKind.Type, insertText: 'number' },
+            { label: 'text', kind: monaco.languages.CompletionItemKind.Type, insertText: 'text' },
+            { label: 'pure', kind: monaco.languages.CompletionItemKind.Function, insertText: 'pure(state)' },
+          ];
+          return { suggestions: suggestions };
+        }
+      });
+
+      const editor = monaco.editor.create(document.getElementById('editor-container'), {
+        value: '',
+        language: 'yamoon',
+        theme: 'vs',
+        automaticLayout: true,
+        tabSize: 2,
+        fontSize: 14,
+        minimap: { enabled: false }
+      });
+
+      editor.onDidChangeModelContent(() => {
+        app.ports.fromEditor.send({
+          content: editor.getValue()
+        });
+      });
+
+      app.ports.toEditor.subscribe(({ action, data }) => {
+        if (action === 'setContent') {
+          editor.setValue(data);
+        } else if (action === 'setTheme') {
+          monaco.editor.setTheme(data);
+        }
+      });
+    });
+  </script>
+</body>
+</html>

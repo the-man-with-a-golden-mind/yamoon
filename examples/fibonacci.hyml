@@ -1,0 +1,19 @@
+module: examples.fib
+
+functions:
+  fib:
+    input:
+      n: number
+    output: number
+    return:
+      loop:
+        args:
+          i: 1
+          prev: 0
+          curr: 1
+        return:
+          if: i == n
+          then: curr
+          else:
+            let: { next: prev + curr }
+            in: recurse(i + 1, curr, next)

@@ -1,0 +1,16 @@
+module: examples.generic_runes
+
+functions:
+  complexNock:
+    input:
+      val: number
+    output: number
+    return:
+      rune: "|-"
+      args:
+        - rune: "?:"
+          args:
+            - val == 0
+            - 42
+            - rune: "$@"
+              args: []

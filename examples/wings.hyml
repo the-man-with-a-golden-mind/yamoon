@@ -1,0 +1,15 @@
+module: examples.wings
+
+functions:
+  outer:
+    input: { x: number }
+    output: number
+    return:
+      let: { y: x + 1 }
+      in:
+        loop:
+          args: { i: 0 }
+          return:
+            if: i == 10
+            then: ^y
+            else: recurse(i + 1)

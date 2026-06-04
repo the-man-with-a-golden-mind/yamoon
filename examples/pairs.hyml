@@ -1,0 +1,18 @@
+module: examples.pairs
+
+constants:
+  p1:
+    type: pair<number, number>
+    value: [1, 2]
+
+  p2:
+    type: pair<text, bool>
+    value: ["ok", true]
+
+functions:
+  firstOfPair:
+    input:
+      p: pair<number, number>
+    output: number
+    return:
+      hoon: "-.p"

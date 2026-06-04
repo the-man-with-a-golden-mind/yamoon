@@ -1,0 +1,38 @@
+{
+  "name": "yamoon",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "index.js",
+  "bin": {
+    "yamoon": "wrapper/cli.js"
+  },
+  "directories": {
+    "doc": "docs",
+    "example": "examples",
+    "test": "tests"
+  },
+  "scripts": {
+    "yamoon": "node wrapper/cli.js",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "ide:build": "cd ide && npx elm make src/Main.elm --output=public/elm.js --optimize"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "devDependencies": {
+    "autoprefixer": "^10.5.0",
+    "commander": "^15.0.0",
+    "cors": "^2.8.6",
+    "elm": "^0.19.1-6",
+    "elm-format": "^0.8.8",
+    "elm-spa": "^6.0.6",
+    "elm-test": "^0.19.1-revision17",
+    "express": "^5.2.1",
+    "postcss": "^8.5.15",
+    "tailwindcss": "^4.3.0",
+    "vite": "^8.0.16",
+    "vite-plugin-elm": "^3.0.1",
+    "yaml": "^2.9.0"
+  }
+}

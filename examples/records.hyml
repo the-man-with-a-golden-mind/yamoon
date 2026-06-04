@@ -1,0 +1,23 @@
+module: examples.records
+
+types:
+  User:
+    kind: record
+    fields:
+      id: number
+      name: text
+      active: bool
+
+constants:
+  sampleUser:
+    User:
+      id: 1
+      name: "Alice"
+      active: true
+
+functions:
+  userName:
+    input:
+      user: User
+    output: text
+    return: user.name

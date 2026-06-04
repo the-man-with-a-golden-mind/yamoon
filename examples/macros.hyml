@@ -1,0 +1,13 @@
+module: examples.macros
+
+macros:
+  square:
+    args: [x]
+    expand: x * x
+
+functions:
+  calc:
+    input:
+      n: number
+    output: number
+    return: square(n) + 1

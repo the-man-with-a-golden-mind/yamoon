@@ -1,0 +1,10 @@
+module: examples.units
+
+functions:
+  findValue:
+    input: { x: number }
+    output: number?
+    return:
+      if: x > 10
+      then: unit(x)
+      else: ~

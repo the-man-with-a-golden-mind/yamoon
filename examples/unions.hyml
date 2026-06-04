@@ -1,0 +1,34 @@
+module: examples.unions
+
+types:
+  Shape:
+    kind: union
+    variants:
+      Circle: { radius: number }
+      Square: { side: number }
+      Point: {}
+
+functions:
+  area:
+    input:
+      shape: Shape
+    output: number
+    return:
+      match: shape
+      cases:
+        Circle: 3 * shape.radius * shape.radius
+        Square: shape.side * shape.side
+        Point: 0
+
+  makeCircle:
+    input: { r: number }
+    output: Shape
+    return:
+      Shape:
+        Circle: { radius: r }
+
+  makePoint:
+    output: Shape
+    return:
+      Shape:
+        Point: none

@@ -1,0 +1,21 @@
+module: examples.tree
+
+types:
+  Tree:
+    kind: union
+    variants:
+      Node:
+        val: number
+        left: Tree
+        right: Tree
+      Empty: {}
+
+functions:
+  sum:
+    input: { t: Tree }
+    output: number
+    return:
+      match: t
+      cases:
+        Node: t.val + sum(t.left) + sum(t.right)
+        Empty: 0

@@ -1,0 +1,12 @@
+module: examples.interpolation
+
+functions:
+  greet:
+    input: { name: text }
+    output: text
+    return: '"Hello, {name}!"'
+
+  report:
+    input: { x: number, y: number }
+    output: text
+    return: '"Sum of {x} and {y} is {x + y}"'

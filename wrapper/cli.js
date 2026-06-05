@@ -14,49 +14,87 @@ const require = createRequire(import.meta.url);
 const elmApp = require('./elm.cjs');
 
 const command = process.argv[2];
-const filePath = process.argv[3];
+const arg1 = process.argv[3];
+const arg2 = process.argv[4];
 
 if (!command) {
     console.log('Usage: yamoon compile <file.hyml>');
     console.log('       yamoon test <file.hyml>');
+    console.log('       yamoon sync <file.hyml> <pier_path>');
     console.log('       yamoon --serve');
     process.exit(1);
 }
 
+const compileHyml = (filePath, isTest = false) => {
+    const content = fs.readFileSync(filePath, 'utf8');
+    const parsed = yaml.load(content);
+    const json = JSON.stringify(parsed);
+    const app = elmApp.Elm.Main.init();
+
+    return new Promise((resolve, reject) => {
+        if (isTest) {
+            app.ports.requestTest.send(json);
+        } else {
+            app.ports.requestCompile.send(json);
+        }
+
+        app.ports.responseSuccess.subscribe((hoon) => resolve(hoon));
+        app.ports.responseError.subscribe((err) => reject(err));
+    });
+};
+
 if (command === 'compile' || command === 'test') {
-    if (!filePath) {
+    if (!arg1) {
         console.log(`Usage: yamoon ${command} <file.hyml>`);
         process.exit(1);
     }
-    const content = fs.readFileSync(filePath, 'utf8');
-    try {
-        const parsed = yaml.load(content);
-        const json = JSON.stringify(parsed);
-
-        const app = elmApp.Elm.Main.init();
-
-        if (command === 'compile') {
-            app.ports.requestCompile.send(json);
-        } else {
-            app.ports.requestTest.send(json);
-        }
-
-        app.ports.responseSuccess.subscribe((hoon) => {
-            console.log(hoon);
-            process.exit(0);
-        });
-
-        app.ports.responseError.subscribe((err) => {
-            console.error('\x1b[31m%s\x1b[0m', '--- yamoon Compilation Error ---');
+    compileHyml(arg1, command === 'test')
+        .then(hoon => console.log(hoon))
+        .catch(err => {
+            console.error('\x1b[31m%s\x1b[0m', `--- yamoon ${command === 'test' ? 'Testing' : 'Compilation'} Error ---`);
             console.error('\x1b[33m%s\x1b[0m', '  > ' + err);
             process.exit(1);
         });
-
-    } catch (e) {
-        console.error('\x1b[31m%s\x1b[0m', '--- YAML Parsing Error ---');
-        console.error('  > ' + e.message);
+} else if (command === 'sync') {
+    if (!arg1 || !arg2) {
+        console.log('Usage: yamoon sync <file.hyml> <pier_path>');
         process.exit(1);
     }
+    
+    const hymlPath = arg1;
+    const pierPath = arg2;
+    const fileName = path.basename(hymlPath, '.hyml');
+    
+    Promise.all([
+        compileHyml(hymlPath, false),
+        compileHyml(hymlPath, true).catch(() => null) // tests might be missing
+    ]).then(([hoon, testHoon]) => {
+        const deskPath = path.join(pierPath, 'base'); // default to base desk
+        if (!fs.existsSync(deskPath)) {
+            console.error(`Error: Could not find 'base' desk in pier at ${pierPath}`);
+            process.exit(1);
+        }
+
+        const libPath = path.join(deskPath, 'lib', `${fileName}.hoon`);
+        const testPath = path.join(deskPath, 'tests', 'lib', `${fileName}.hoon`);
+
+        fs.mkdirSync(path.dirname(libPath), { recursive: true });
+        fs.writeFileSync(libPath, hoon);
+        console.log(`\x1b[32m✓\x1b[0m Synced library to ${libPath}`);
+
+        if (testHoon) {
+            fs.mkdirSync(path.dirname(testPath), { recursive: true });
+            fs.writeFileSync(testPath, testHoon);
+            console.log(`\x1b[32m✓\x1b[0m Synced test generator to ${testPath}`);
+            console.log(`\nTo run tests in your Urbit pier:`);
+            console.log(`  |mount %base`);
+            console.log(`  -test /=base=/tests/lib/${fileName}`);
+        }
+    }).catch(err => {
+        console.error('Sync failed:', err);
+        process.exit(1);
+    });
+
 } else if (command === '--serve' || command === 'serve') {
     const port = process.env.PORT || 3000;
     const root = process.cwd();
@@ -86,7 +124,7 @@ if (command === 'compile' || command === 'test') {
                         const relPath = path.join(relativeDir, file);
                         const stats = fs.statSync(fullPath);
                         if (stats.isDirectory()) {
-                            if (file === 'node_modules' || file === '.git' || file === 'elm-stuff' || file === '.elm-spa') return null;
+                            if (file === 'node_modules' || file === '.git' || file === 'elm-stuff' || file === '.elm-spa' || file === 'ide') return null;
                             return {
                                 name: file,
                                 path: relPath,

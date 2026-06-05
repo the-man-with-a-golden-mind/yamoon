@@ -24,13 +24,21 @@ check prog =
         baseLocalVars =
             case prog.state of
                 Just _ ->
-                    Dict.singleton "state" (Source.TypeRawHoon "state")
+                    Dict.singleton "state" (Source.TypeNamed "state")
 
                 Nothing ->
                     Dict.empty
 
+        ctxTypes =
+            case prog.state of
+                Just s ->
+                    Dict.insert "state" (Source.Record s.fields) prog.types
+
+                Nothing ->
+                    prog.types
+
         ctx =
-            { types = prog.types
+            { types = ctxTypes
             , constants = prog.constants
             , functions = prog.functions
             , localVars = baseLocalVars
@@ -156,17 +164,8 @@ checkTest ctx testDef =
 
 
 checkScenarioStep : Context -> Source.ScenarioStep -> List Error
-checkScenarioStep ctx step =
-    case step.action of
-        Source.PokeAction { route } ->
-            case Dict.get route ctx.functions of -- pokes are stored in pokes dict, but dispatch to functions or are themselves arms
-                -- Actually our pokes are in prog.pokes
-                -- I need to update Context to include pokes
-                _ ->
-                    []
-
-        _ ->
-            []
+checkScenarioStep _ _ =
+    []
 
 
 checkExpr : Context -> Source.LocatedExpr -> List Error
@@ -727,8 +726,23 @@ inferLiteralType ctx expected val =
         Source.LitVariant typeName _ _ ->
             Source.TypeNamed typeName
 
-        _ ->
-            Source.TypeNumber
+        Source.LitObject obj ->
+            case expected of
+                Just tr ->
+                    case resolveType ctx tr of
+                        Source.TypeNamed name ->
+                            case Dict.get name ctx.types of
+                                Just (Source.Record _) ->
+                                    Source.TypeNamed name
+
+                                _ ->
+                                    Source.TypeNumber
+
+                        _ ->
+                            Source.TypeNumber
+
+                Nothing ->
+                    Source.TypeNumber
 
 
 inferListElements : Context -> List Source.LiteralValue -> Source.TypeRef

@@ -56,7 +56,7 @@ lowerTest prog name def =
             [ lowerScenarioTest prog name data ]
 
         Source.MigrationTest data ->
-            []
+            [ lowerMigrationTest name data ]
 
 
 lowerUnitTest : String -> Source.UnitTestData -> Hoon.HoonArm
@@ -98,12 +98,93 @@ lowerUnitTest name data =
 lowerScenarioTest : Source.Program -> String -> Source.ScenarioTestData -> Hoon.HoonArm
 lowerScenarioTest prog name data =
     let
-        -- This generates a complex trap that threads state
-        -- Simplified for now: just a sequence of state updates
+        -- Scenario lowering generates a sequence of bindings that thread the agent state
+        init =
+            Hoon.HLet "state" (Hoon.HName data.setup) <|
+                Hoon.HLet "bowl" (Hoon.HRaw "mock-bowl") <|
+                    lowerSteps data.steps
+
+        lowerSteps steps =
+            case steps of
+                [] ->
+                    Hoon.HBool True
+
+                step :: rest ->
+                    let
+                        stepLogic =
+                            case step.action of
+                                Source.PokeAction { route, payload } ->
+                                    let
+                                        mark =
+                                            prog.pokes
+                                                |> Dict.get route
+                                                |> Maybe.andThen .mark
+                                                |> Maybe.withDefault "tas"
+
+                                        payloadHoon =
+                                            lowerLiteralValue (Source.LitObject payload)
+                                    in
+                                    Hoon.HLet "[cards state]" (Hoon.HRaw ("(on-poke:" ++ camelToKebab route ++ " bowl %" ++ mark ++ " !>(" ++ renderHoonExprForRaw payloadHoon ++ "))")) <|
+                                        lowerExpectations step.expect (lowerSteps rest)
+
+                                Source.WaitAction { duration } ->
+                                    Hoon.HLet "bowl" (Hoon.HRaw ("bowl(now (add now.bowl " ++ duration ++ "))")) <|
+                                        lowerSteps rest
+                    in
+                    stepLogic
+
+        lowerExpectations expect next =
+            let
+                assertions =
+                    List.concat
+                        [ case expect.state of
+                            Just s ->
+                                [ Hoon.HCall "expect-eq" [ loc (Hoon.HName "state"), loc (lowerLiteralValue (Source.LitObject s)) ] ]
+
+                            Nothing ->
+                                []
+                        , expect.scries
+                            |> Dict.toList
+                            |> List.map
+                                (\( path, val ) ->
+                                    Hoon.HCall "expect-eq"
+                                        [ loc (Hoon.HRaw ("(on-peek:" ++ camelToKebab name ++ " " ++ pathToHoon path ++ ")"))
+                                        , loc (lowerLiteralValue val)
+                                        ]
+                                )
+                        ]
+
+                body =
+                    case assertions of
+                        [] ->
+                            next
+
+                        _ ->
+                            Hoon.HCall "all" (List.map loc (assertions ++ [ next ]))
+            in
+            body
+    in
+    Hoon.HoonArm ("test-" ++ camelToKebab name) (Hoon.HGate [] init)
+
+
+lowerMigrationTest : String -> Source.MigrationTestData -> Hoon.HoonArm
+lowerMigrationTest name data =
+    let
         body =
-            Hoon.HRaw ":: scenario testing not fully implemented in lowering yet"
+            Hoon.HLet "old" (Hoon.HRaw ("!>(" ++ data.oldState ++ ")")) <|
+                Hoon.HLet "new-state" (Hoon.HRaw "(on-load old)") <|
+                    Hoon.HCall "expect-eq" [ loc (Hoon.HName "new-state"), loc (lowerLiteralValue (Source.LitObject data.expectState)) ]
     in
     Hoon.HoonArm ("test-" ++ camelToKebab name) (Hoon.HGate [] body)
+
+
+pathToHoon : String -> String
+pathToHoon path =
+    path
+        |> String.split "/"
+        |> List.filter (not << String.isEmpty)
+        |> List.map (\s -> "%" ++ s)
+        |> (\parts -> "[" ++ String.join " " parts ++ " ~]")
 
 
 lowerLiteralValue : Source.LiteralValue -> Hoon.HoonExpr
@@ -113,7 +194,12 @@ lowerLiteralValue val =
             Hoon.HAtom s
 
         Source.LitText s ->
-            Hoon.HCord s
+            case s of
+                "" ->
+                    Hoon.HRaw "~"
+
+                _ ->
+                    Hoon.HCord s
 
         Source.LitBool b ->
             Hoon.HBool b
@@ -122,7 +208,7 @@ lowerLiteralValue val =
             Hoon.HList (List.map lowerLiteralValue l)
 
         Source.LitObject obj ->
-            Hoon.HRaw ":: object literal in test"
+            lowerCellList (obj |> Dict.toList |> List.map (\( k, v ) -> loc (Hoon.HRaw (k ++ "=" ++ renderHoonExprForRaw (lowerLiteralValue v)))))
 
         Source.LitRecord t f ->
             Hoon.HRaw ":: record literal in test"
@@ -160,7 +246,7 @@ lowerGall prog =
         onLoad =
             case prog.onLoad of
                 Just migration ->
-                    [ Hoon.HoonArm "on-load" (Hoon.HGate [ ( "old=*", Hoon.MRaw "*" ) ] (lowerExpr prog.options migration)) ]
+                    [ Hoon.HoonArm "on-load" (Hoon.HGate [ ( "old=vase", Hoon.MRaw "vase" ) ] (Hoon.HLet "old" (Hoon.HRaw "q.old") (lowerExpr prog.options migration))) ]
 
                 Nothing ->
                     []
@@ -204,30 +290,30 @@ lowerStateMold opts s =
 lowerOnPoke : Source.Program -> Hoon.HoonArm
 lowerOnPoke prog =
     let
-        pokeMatch =
+        markMatch =
             prog.pokes
                 |> Dict.toList
                 |> List.map
                     (\( name, def ) ->
                         let
-                            pattern =
+                            mark =
                                 case def.mark of
                                     Just m ->
-                                        "[% %" ++ m ++ " %" ++ camelToKebab name ++ " *]"
+                                        "%" ++ m
 
                                     Nothing ->
-                                        "[% %tas %" ++ camelToKebab name ++ " *]"
+                                        "%tas"
 
                             call =
-                                Hoon.HCall name [ loc (Hoon.HRaw "payload") ]
+                                Hoon.HCall name [ loc (Hoon.HRaw "q.vase") ]
                         in
-                        ( pattern, call )
+                        ( mark, call )
                     )
 
         body =
-            Hoon.HMatch (loc (Hoon.HRaw "[mark tag payload]")) pokeMatch (Just (Hoon.HRaw "on-poke:def"))
+            Hoon.HMatch (loc (Hoon.HRaw "mark")) markMatch (Just (Hoon.HRaw "on-poke:def"))
     in
-    Hoon.HoonArm "on-poke" (Hoon.HGate [ ( "[mark=@tas tag=@tas payload=*]", Hoon.MRaw "*" ) ] body)
+    Hoon.HoonArm "on-poke" (Hoon.HGate [ ( "mark=@tas", Hoon.MAtom ), ( "vase=vase", Hoon.MRaw "vase" ) ] body)
 
 
 lowerOnWatch : Source.Program -> Hoon.HoonArm
@@ -252,7 +338,7 @@ lowerOnWatch prog =
         body =
             Hoon.HMatch (loc (Hoon.HRaw "path")) watchMatch (Just (Hoon.HRaw "on-watch:def"))
     in
-    Hoon.HoonArm "on-watch" (Hoon.HGate [ ( "path=path", Hoon.MRaw "*" ) ] body)
+    Hoon.HoonArm "on-watch" (Hoon.HGate [ ( "path=path", Hoon.MRaw "path" ) ] body)
 
 
 lowerOnPeek : Source.Program -> Hoon.HoonArm
@@ -271,8 +357,10 @@ lowerOnPeek prog =
                                     |> List.map (\s -> "%" ++ s)
                                     |> (\parts -> "[" ++ String.join " " parts ++ " ~]")
 
+                            -- Real on-peek returns (unit (unit cage))
+                            -- We wrap the result: [~ ~ %tas !>(result)] (simplified for now)
                             scryBody =
-                                Hoon.HCall "unit" [ loc (Hoon.HCast (lowerTypeRef prog.options def.output) (lowerExpr prog.options def.body)) ]
+                                Hoon.HRaw ("[~ ~ %tas !>(" ++ renderHoonExprForRaw (lowerExpr prog.options def.body) ++ ")]")
                         in
                         ( pattern, scryBody )
                     )
@@ -280,7 +368,7 @@ lowerOnPeek prog =
         body =
             Hoon.HMatch (loc (Hoon.HRaw "path")) scryMatch (Just (Hoon.HRaw "on-peek:def"))
     in
-    Hoon.HoonArm "on-peek" (Hoon.HGate [ ( "path=path", Hoon.MRaw "*" ) ] body)
+    Hoon.HoonArm "on-peek" (Hoon.HGate [ ( "path=path", Hoon.MRaw "path" ) ] body)
 
 
 lowerTypes : Source.Program -> List Hoon.HoonArm
@@ -319,7 +407,7 @@ lowerTypeDef opts def =
                                 let
                                     tagName =
                                         "%" ++ camelToKebab name
-                                in
+                                 in
                                 case mFields of
                                     Just fields ->
                                         let
@@ -434,12 +522,17 @@ lowerLiteral opts mType val =
             Hoon.HAtom s
 
         Source.LitText s ->
-            case opts.textRepresentation of
-                Source.Cord ->
-                    Hoon.HCord s
+            case s of
+                "" ->
+                    Hoon.HRaw "~"
 
-                Source.Tape ->
-                    Hoon.HRaw ("\"" ++ s ++ "\"")
+                _ ->
+                    case opts.textRepresentation of
+                        Source.Cord ->
+                            Hoon.HCord s
+
+                        Source.Tape ->
+                            Hoon.HRaw ("\"" ++ s ++ "\"")
 
         Source.LitBool b ->
             Hoon.HBool b
@@ -520,7 +613,7 @@ lowerLiteral opts mType val =
                         Hoon.HRaw (":: unknown union type " ++ typeName)
 
         Source.LitObject obj ->
-            Hoon.HRaw ":: raw object literal not supported, use typed record"
+            lowerCellList (obj |> Dict.toList |> List.map (\( k, v ) -> loc (Hoon.HRaw (k ++ "=" ++ renderHoonExprForRaw (lowerLiteralValue v)))))
 
 
 lowerCellList : List Hoon.LocatedHoonExpr -> Hoon.HoonExpr
@@ -561,12 +654,17 @@ lowerExpr opts le =
             Hoon.HAtom s
 
         Source.EText s ->
-            case opts.textRepresentation of
-                Source.Cord ->
-                    Hoon.HCord s
+            case s of
+                "" ->
+                    Hoon.HRaw "~"
 
-                Source.Tape ->
-                    Hoon.HRaw ("\"" ++ s ++ "\"")
+                _ ->
+                    case opts.textRepresentation of
+                        Source.Cord ->
+                            Hoon.HCord s
+
+                        Source.Tape ->
+                            Hoon.HRaw ("\"" ++ s ++ "\"")
 
         Source.EInterpolated fragments ->
             lowerInterpolated opts fragments
@@ -996,6 +1094,22 @@ lowerCall opts name args =
             _ ->
                 Hoon.HCall name (List.map (lowerExpr opts >> loc) args)
 
+    else if name == "init" then
+        case args of
+            [ door, sample ] ->
+                Hoon.HRune "~." [ lowerExpr opts door, lowerExpr opts sample ]
+
+            _ ->
+                Hoon.HCall name (List.map (lowerExpr opts >> loc) args)
+
+    else if name == "my" then
+        case args of
+            [ list ] ->
+                Hoon.HCall "my" [ lowerExpr opts list |> loc ]
+
+            _ ->
+                Hoon.HCall name (List.map (lowerExpr opts >> loc) args)
+
     else if name == "recurse" then
         Hoon.HCall "$" (List.map (lowerExpr opts >> loc) args)
 
@@ -1041,7 +1155,7 @@ lowerCall opts name args =
 
                         else
                             "by"
-                in
+                 in
                 Hoon.HRaw ("(~(has " ++ engine ++ " " ++ renderHoonExprForRaw (lowerExpr opts coll) ++ ") " ++ renderHoonExprForRaw (lowerExpr opts key) ++ ")")
 
             _ ->

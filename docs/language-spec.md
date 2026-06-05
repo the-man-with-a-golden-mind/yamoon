@@ -1,105 +1,97 @@
-# yamoon Language Specification v1.0
+# yamoon Language Specification v1.0: Technical Depth
 
-yamoon is a high-level, DX-friendly abstraction over the Hoon programming language. It uses YAML for declarations and a natural expression language for logic.
+Yamoon is a high-level, specification-compliant authoring language for the Urbit operating system. It provides a purely functional compilation pipeline from declarative YAML/Expression syntax to idiomatic, optimized Hoon.
 
-## 1. Top-Level Structure
+---
 
-A yamoon file (`.hyml`) consists of a YAML object with the following fields:
+## 1. Program Model
 
-- `module`: (Required) The dot-separated module name.
-- `docs`: (Optional) A list of strings for documentation comments.
-- `options`: (Optional) Compiler settings.
-- `imports`: (Optional) List of Hoon import runes (`/+`, `/-`, `/lib`).
-- `types`: (Optional) Custom type definitions (records, unions, aliases).
-- `macros`: (Optional) Syntactic substitution macros.
-- `state`: (Optional, Gall target only) Versioned state definition.
-- `on_load`: (Optional, Gall target only) State migration expression.
-- `pokes`: (Optional, Gall target only) Poke handlers.
-- `watches`: (Optional, Gall target only) Subscription handlers.
-- `scries`: (Optional, Gall target only) Scry tree logic.
-- `constants`: (Optional) Global constants (values or expressions).
-- `functions`: (Optional) Gate definitions with ordered arguments.
+A yamoon project is a single YAML document representing an Urbit module (Library or Gall Agent).
 
-## 2. Options
+### 1.1 Compilation Targets
+- `library`: Outputs a core (`|%`) containing arms. Suitable for `/lib` or `/sur` files.
+- `gall`: Outputs an agent door (`|_`) with standardized lifecycle arms.
 
-- `target`: `library` (default) or `gall`.
-- `text`: `cord` (default) or `tape`.
-- `number`: `unsigned` (default) or `atom`.
+---
 
-## 3. Types
+## 2. Core Runes Coverage
 
-### Records
-Ordered map of field names to types. Lowered to Hoon `,[]`.
-```yaml
-types:
-  User:
-    kind: record
-    fields:
-      id: number
-      name: text
-```
+Yamoon maps every core Hoon pattern to a named, high-level construct.
 
-### Unions (Algebraic Data Types)
-Polymorphic types with tagged variants. Lowered to Hoon `$%(...)`.
-```yaml
-types:
-  Shape:
-    kind: union
-    variants:
-      Circle: { radius: number }
-      Square: { side: number }
-      Point: none # Fieldless variant
-```
+| Hoon Rune | yamoon Construct | Context |
+|---|---|---|
+| `?:` | `if/then/else` | Basic conditional logic. |
+| `?.` | `if_not/then/else` | Inverted conditional (error-first). |
+| `?>` | `assert: cond in: body` | Positive assertion (crash on fail). |
+| `?<` | `unless: cond in: body` | Negative assertion (crash on true). |
+| `=+` | `let: { x: val } in: body` | Subject composition (new variable). |
+| `=.` | `set: { x: val } in: body` | Subject mutation (existing variable). |
+| `?+` | `match: x cases: {...}` | Pattern matching on tag/mold. |
+| `|-` | `loop: { args: {...}, return: ... }`| Trap initialization for recursion. |
+| `$`  | `recurse(...)` | Trap re-entry (tail recursion). |
+| `^-` | `cast(Type, Expr)` | Formal type enforcement. |
+| `|=` | `functions: { name: ... }` | Gate definition (arms). |
+| `|_` | `options: { target: "gall" }` | Door definition (agent). |
+| `.~` | `nock(formula)` | Raw virtual machine access. |
+| `.^` | `scry(Mark, path)` | Kernel-level scry. |
 
-### Type References
-- `number`: `@ud`.
-- `nat`: `@ud`.
-- `text`: `cord` or `tape`.
-- `bool`: `?`.
-- `T?`: `(unit T)`.
-- `list<T>`: `(list T)`.
-- `pair<A, B>`: `[A B]`.
-- `quip<card, state>`: `[(list card) state]`.
-- `map<K, V>`: `(map K V)`.
-- `set<T>`: `(set T)`.
+---
 
-## 4. Expression Language
+## 3. Data & Type Semantics
 
-yamoon supports a familiar expression syntax with character-level error diagnostics.
+### 3.1 Atoms & Molds
+- **Numbers**: Default to `@ud` (unsigned decimal). Supports `atom` option for `@`.
+- **Text**: Controlled by `options.text`.
+  - `cord`: Single-quoted `'text'`. Optimized for storage.
+  - `tape`: Double-quoted `"text"`. Optimized for manipulation.
+- **Booleans**: Maps to `?`. Represented as `true` (`%.y`) and `false` (`%.n`).
 
-- **Arithmetic**: `+`, `-`, `*`
-- **Comparison**: `==`, `!=`, `>`, `<`, `>=`, `<=`
-- **Logical**: `if/then/else`, `if_not/then/else` (Hoon `?.`)
-- **Assertions**: `assert: cond in: expr` (Hoon `?>`), `unless: cond in: expr` (Hoon `?<`)
-- **Field Access**: `object.field` (Lowered to `field.object` or irregular wing).
-- **Wing Navigation**: `..name` (parent subject), `^var` (outer scope lookup).
-- **Interpolation**: `"Sum: {x + y}"` (Lowered to recursive `cat 3` trees).
-- **Variant Construction**: `Type:Variant { fields }` or `Type:Variant: none`.
-- **Loop & Recursion**:
-  ```yaml
-  loop:
-    args: { i: 0 }
-    return: if: i == 10 then: 10 else: recurse(i + 1)
-  ```
-- **Variable Binding**: `let: { y: x + 1 } in: y * 2`.
-- **State Updates**: `set: { var: val } in: next_expr` (Hoon `=.`).
-- **Pattern Matching**: `match: shape cases: { Circle: expr, Square: expr } default: expr`.
+### 3.2 Containers
+- **Cells**: Represented as `[a b]` or `pair<A, B>`. Nesting maps to standard binary trees.
+- **Lists**: Strictly typed `list<T>`. Lowered to `(list T)`.
+- **Maps/Sets**: High-level abstractions over Hoon's `%by` and `%in` engines.
 
-## 5. Built-in Functions (Standard Library)
+---
 
-- `first(list)`, `rest(list)`: List head/tail.
-- `prepend(x, list)`, `append(list, x)`: List insertion.
-- `map(list, func)`, `filter(list, pred)`, `fold(list, init, func)`.
-- `get(m, k)`, `put(m, k, v)`, `has(m, k)`: Map/Set operations using `by`/`in` engines.
-- `pure(state)`: Standard Gall transition `[~ state]`.
-- `give(path, gift)`: Gall subscription update card.
-- `scry(Mark, path)`: Urbit system lookup (`.^`).
-- `scot(mark, value)`: Atomic string conversion.
-- `nock(formula)`: Raw Nock access (`.~`).
-- `recurse(...)`: Recursive call within a `loop` block (`$`).
+## 4. Subject Tree Navigation
 
-## 6. Error Diagnostics
+Yamoon implements Urbit's "Wing" navigation system:
+- **Direct**: `obj.field`
+- **Parent**: `..name` (maps to `..` search).
+- **Outer Scope**: `^var` (maps to `^` skip).
 
-yamoon provides precise, path-aware diagnostics:
-- **Syntax Errors**: Reported with `line` and `col` within the expression string.
-- **Type Errors**: Reported with the logical path (e.g., `functions.myFunc.return`) and the exact coordinate of the failure.
+---
+
+## 5. Gall Lifecycle Logic
+
+Generated agents follow the standard Gall transition model: `(quip card state)`.
+
+### 5.1 Poke Dispatch
+1.  Receive `[mark vase]`.
+2.  Match `mark` against the `pokes:` map.
+3.  Unpack `vase` to the handler's sample type.
+4.  Execute logic and return `[cards state]`.
+
+### 5.2 Scry Propagation
+1.  Receive `path`.
+2.  Match `path` against the `scries:` map.
+3.  Execute logic and wrap result in `(unit (unit cage))`.
+
+---
+
+## 6. Syntactic Macros
+
+Macros are expanded in a dedicated pre-processing pass.
+1.  Identify macro call: `name(args)`.
+2.  Substitute arguments into the macro's `expand` block.
+3.  Recursively repeat until no macro calls remain.
+4.  Circular expansion detection prevents compiler hangs.
+
+---
+
+## 7. Precise Diagnostics
+
+The compiler maintains a **Position Map** for every node in the AST.
+- **Syntax errors**: Point to the line and column within a YAML value string.
+- **Type errors**: Include the logical path (e.g., `pokes.increment.return`) and the source coordinates.
+- **Context-aware**: Error messages include the expected vs. actual types in Yamoon syntax (e.g., `expected list<number>, got text`).

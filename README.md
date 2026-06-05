@@ -43,6 +43,7 @@ Compiles to:
 - [Gall Agent Patterns](docs/gall-agents.md)
 - [Testing Framework](docs/testing.md)
 - [Web Editor](docs/editor.md)
+- [Hoon Verification](docs/hoon-verification.md)
 - [AI Subagent Reference](docs/AI.md)
 
 ## Development

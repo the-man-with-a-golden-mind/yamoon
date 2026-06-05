@@ -56,6 +56,7 @@ emptyProgram =
     , scries = Dict.empty
     , constants = Dict.empty
     , functions = Dict.empty
+    , tests = Dict.empty
     }
 
 

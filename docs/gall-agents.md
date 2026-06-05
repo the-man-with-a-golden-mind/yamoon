@@ -1,107 +1,138 @@
-# Developing Gall Agents with yamoon
+# Advanced Gall Agent Development with yamoon
 
-yamoon simplifies Gall agent development by automating boilerplate management, state versioning, and routing.
+This guide covers professional patterns for building production-ready Gall agents using yamoon. It focuses on state management, Arvo kernel compatibility, and reactive messaging.
 
-## 1. Enabling Gall Target
+## 1. The Agent Anatomy
 
-To build an agent, set the target in your options:
+When `target: gall` is set in the project options, yamoon transforms your YAML project into a standard Urbit "Door" (`|_`). This door implements all 10+ standard Gall arms, routing them to your custom handlers or standard defaults.
 
-```yaml
-options:
-  target: gall
-```
+### 1.1 Door Structure
+The compiler automatically generates the boilerplate for:
+- `+on-init`: Primary initialization.
+- `+on-save`: State serialization.
+- `+on-load`: State migration and reload logic.
+- `+on-poke`: Action routing.
+- `+on-watch`: Subscription handling.
+- `+on-peek`: Read interface (scries).
+- `+on-leave`, `+on-agent`, `+on-arvo`, `+on-fail`: Defaulted handlers.
 
-This enables the specialized `state`, `pokes`, `scries`, and `watches` sections.
+---
 
-## 2. State Management
+## 2. Professional State Management
 
-yamoon manages your agent's state as a versioned record.
+Yamoon treats state as a first-class, versioned object.
 
+### 2.1 State Versioning
+Define your state schema in the `state:` block.
 ```yaml
 state:
-  version: 1
+  version: 0
   data:
     count: number
-    friends: set<text>
+    logs: list<text>
+```
+The compiler generates a `state-v0` mold and a `state` alias. When you increment the version, you enable the `on_load` migration path.
+
+### 2.2 Initial State
+You **must** define an `initialState` constant that matches your state schema.
+```yaml
+constants:
+  initialState:
+    state:
+      count: 0
+      logs: []
 ```
 
-The compiler automatically generates:
-- `state-v1` mold.
-- A transition `on-init` that sets the initial state (must define `initialState` in `constants`).
-- Standard `on-save` and `on-load` logic.
-
-### State Migration (`on_load`)
-Define how to handle state updates when the agent is reloaded:
-
+### 2.3 State Migration (`on_load`)
+Use the `on_load` block to upgrade state when your code is reloaded.
 ```yaml
 on_load:
-  let: { old_state: "((unit state) (mole [old state]))" }
+  let: { old: "((unit state) (mole [old state]))" }
   in:
-    if: old_state == ~
-    then: pure(initialState)
-    else: pure(first(old_state))
+    if: old == ~
+    then: pure(initialState) # Fresh install
+    else: pure(first(old))  # Upgrade existing state
 ```
 
-## 3. Poke Routing
+---
 
-Instead of a giant nested `?+` tree in `+on-poke`, define handlers declaratively:
+## 3. High-Performance Poke Routing
 
+Yamoon simplifies poke handling by automating mark matching and payload unpacking.
+
+### 3.1 Declarative Routing
+Define your pokes in the `pokes:` block.
 ```yaml
 pokes:
-  addFriend:
-    mark: friend-action
-    input: { name: text }
+  increment:
+    mark: count-action # Matches %count-action mark
+    input: { amount: number }
     return:
       pure:
         state:
-          friends: "put(state.friends, name)"
+          count: state.count + amount
 ```
 
-- `mark`: The Urbit mark for the poke.
-- `input`: The fields to unpack from the noun.
-- `return`: A `quip<card, state>` expression.
+### 3.2 Mark-Based Dispatch
+The compiler generates a central `+on-poke` arm that matches the incoming mark. 
+- If a `mark` is specified, it matches that exact mark.
+- If omitted, it matches `%tas` (standard atom).
+- It automatically uses `q.vase` to unpack the data for your handler.
 
-## 4. Scry Tree (on-peek)
+---
 
-Define your agent's read interface as a map of paths to logic:
+## 4. Structured Scry Trees (`on-peek`)
+
+Scries are the primary way to read data from an agent. Yamoon generates a highly optimized `+on-peek` tree from your `scries:` block.
 
 ```yaml
 scries:
-  /friends:
+  /count:
+    output: number
+    return: state.count
+  
+  /logs/all:
     output: list<text>
-    return: "map(state.friends, identity)"
-  /friend/exists:
-    output: bool
-    return: "has(state.friends, name)" # name is inferred from path? (future)
+    return: state.logs
 ```
 
-The compiler generates an optimized `+on-peek` door with path matching and type casting.
+### 4.1 Path Matching
+The compiler transforms paths like `/logs/all` into idiomatic Hoon path matches: `[%logs %all ~]`.
 
-## 5. Subscriptions (on-watch)
+### 4.2 Type Casting & Wrapping
+Generated scries are automatically:
+1.  **Casted**: Wrapped in `^- (unit (unit cage))`.
+2.  **Vased**: Packed using `!>` for type safety.
+3.  **Scoped**: Connected to your agent's current state.
 
-Handle incoming subscription requests:
+---
 
+## 5. Reactive Messaging (Cards)
+
+Agents communicate using "Cards". Yamoon provides high-level helpers for the two primary communication patterns.
+
+### 5.1 Gifts (Subscriptions)
+Notify subscribers of changes using `give()`.
 ```yaml
 watches:
-  /updates: pure(state)
+  /updates: pure(state) # Auto-send state on subscribe
 ```
 
-## 6. Messaging & Cards
-
-yamoon provides helpers for generating Gall cards:
-
-| Pattern | Expression | Hoon Equivalent |
-|---|---|---|
-| **Transition** | `pure(state)` | `[~ state] |
-| **Emit Gift** | `give(/path, Gift:Update { ... })` | `[%give /path [%update ...]]` |
-| **Pass Note** | `pass(/path, %vane, %task, noun)` | `[%pass /path [%arvo %vane %task noun]]` |
-
-Example of a complex transition:
+### 5.2 Notes (Outbound Actions)
+Send messages to other agents or system vanes using `pass()`.
 ```yaml
-pokes:
-  notifyAll:
-    input: { msg: text }
-    return:
-      let: { card: "give(/updates, Task:Notice { text: msg })" }
-      in: [ [card] state ]
+# Syntax: pass(path, vane, task, payload)
+let: { note: "pass(/timer, %b, %wait, now+~h1)" }
+in: [ [note] state ]
 ```
+
+---
+
+## 6. Arvo Compatibility Hardening
+
+Yamoon-generated agents are strictly compliant with the **Urbit Arvo/Gall kernel specification**. They handle:
+- **Vase Unpacking**: Safe extraction of nouns from system vases.
+- **Cage Packing**: Standardized wrapping of results for inter-vane communication.
+- **Door Semantics**: Proper door samples (`bowl`) are available via the subject.
+
+**Yamoon allows you to focus on the business logic of your agent while it handles the complex, low-level mechanics of the Urbit kernel.**

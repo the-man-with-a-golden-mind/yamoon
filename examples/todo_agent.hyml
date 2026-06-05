@@ -13,9 +13,9 @@ types:
   Task:
     kind: record
     fields:
+      done: bool
       id: number
       title: text
-      done: bool
 
 macros:
   newTask:
@@ -35,8 +35,11 @@ on_load:
 
 constants:
   initialState:
-    tasks: []
-    nextId: 1
+    type: state
+    value:
+      state:
+        tasks: []
+        nextId: 1
 
 pokes:
   addTask:

@@ -1,0 +1,7 @@
+module: examples.unknown_func
+
+functions:
+  fail:
+    input: { x: number }
+    output: number
+    return: "jj(x)"

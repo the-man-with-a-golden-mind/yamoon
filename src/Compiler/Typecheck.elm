@@ -496,21 +496,127 @@ inferExprType ctx le =
                 x :: _ ->
                     inferExprType ctx x
 
-        Source.EBinary _ left right ->
-            let
-                _ =
-                    inferExprType ctx left
+        Source.EBinary op left right ->
+            case ( inferExprType ctx left, inferExprType ctx right ) of
+                ( Ok tLeft, Ok tRight ) ->
+                    case op of
+                        Source.Eq ->
+                            if typesEqual ctx tLeft tRight then
+                                Ok Source.TypeBool
+                            else
+                                Err (TypeMismatch newCtx tLeft tRight)
 
-                _ =
-                    inferExprType ctx right
-            in
-            Ok Source.TypeNumber
+                        Source.NotEq ->
+                            if typesEqual ctx tLeft tRight then
+                                Ok Source.TypeBool
+                            else
+                                Err (TypeMismatch newCtx tLeft tRight)
 
-        Source.EIf _ then_ _ ->
-            inferExprType ctx then_
+                        Source.GreaterThan ->
+                            if not (typesEqual ctx tLeft Source.TypeNumber) then
+                                Err (TypeMismatch { ctx | currentPos = left.pos } Source.TypeNumber tLeft)
+                            else if not (typesEqual ctx tRight Source.TypeNumber) then
+                                Err (TypeMismatch { ctx | currentPos = right.pos } Source.TypeNumber tRight)
+                            else
+                                Ok Source.TypeBool
 
-        Source.EIfNot _ then_ _ ->
-            inferExprType ctx then_
+                        Source.LessThan ->
+                            if not (typesEqual ctx tLeft Source.TypeNumber) then
+                                Err (TypeMismatch { ctx | currentPos = left.pos } Source.TypeNumber tLeft)
+                            else if not (typesEqual ctx tRight Source.TypeNumber) then
+                                Err (TypeMismatch { ctx | currentPos = right.pos } Source.TypeNumber tRight)
+                            else
+                                Ok Source.TypeBool
+
+                        Source.GreaterOrEqual ->
+                            if not (typesEqual ctx tLeft Source.TypeNumber) then
+                                Err (TypeMismatch { ctx | currentPos = left.pos } Source.TypeNumber tLeft)
+                            else if not (typesEqual ctx tRight Source.TypeNumber) then
+                                Err (TypeMismatch { ctx | currentPos = right.pos } Source.TypeNumber tRight)
+                            else
+                                Ok Source.TypeBool
+
+                        Source.LessOrEqual ->
+                            if not (typesEqual ctx tLeft Source.TypeNumber) then
+                                Err (TypeMismatch { ctx | currentPos = left.pos } Source.TypeNumber tLeft)
+                            else if not (typesEqual ctx tRight Source.TypeNumber) then
+                                Err (TypeMismatch { ctx | currentPos = right.pos } Source.TypeNumber tRight)
+                            else
+                                Ok Source.TypeBool
+
+                        Source.Add ->
+                            if not (typesEqual ctx tLeft Source.TypeNumber) then
+                                Err (TypeMismatch { ctx | currentPos = left.pos } Source.TypeNumber tLeft)
+                            else if not (typesEqual ctx tRight Source.TypeNumber) then
+                                Err (TypeMismatch { ctx | currentPos = right.pos } Source.TypeNumber tRight)
+                            else
+                                Ok Source.TypeNumber
+
+                        Source.Sub ->
+                            if not (typesEqual ctx tLeft Source.TypeNumber) then
+                                Err (TypeMismatch { ctx | currentPos = left.pos } Source.TypeNumber tLeft)
+                            else if not (typesEqual ctx tRight Source.TypeNumber) then
+                                Err (TypeMismatch { ctx | currentPos = right.pos } Source.TypeNumber tRight)
+                            else
+                                Ok Source.TypeNumber
+
+                        Source.Mul ->
+                            if not (typesEqual ctx tLeft Source.TypeNumber) then
+                                Err (TypeMismatch { ctx | currentPos = left.pos } Source.TypeNumber tLeft)
+                            else if not (typesEqual ctx tRight Source.TypeNumber) then
+                                Err (TypeMismatch { ctx | currentPos = right.pos } Source.TypeNumber tRight)
+                            else
+                                Ok Source.TypeNumber
+
+                ( Err err, _ ) ->
+                    Err err
+
+                ( _, Err err ) ->
+                    Err err
+
+        Source.EIf cond then_ else_ ->
+            case inferExprType ctx cond of
+                Ok Source.TypeBool ->
+                    case ( inferExprType ctx then_, inferExprType ctx else_ ) of
+                        ( Ok tThen, Ok tElse ) ->
+                            if typesEqual ctx tThen tElse then
+                                Ok tThen
+                            else
+                                Err (TypeMismatch newCtx tThen tElse)
+
+                        ( Err err, _ ) ->
+                            Err err
+
+                        ( _, Err err ) ->
+                            Err err
+
+                Ok t ->
+                    Err (TypeMismatch { ctx | currentPos = cond.pos } Source.TypeBool t)
+
+                Err err ->
+                    Err err
+
+        Source.EIfNot cond then_ else_ ->
+            case inferExprType ctx cond of
+                Ok Source.TypeBool ->
+                    case ( inferExprType ctx then_, inferExprType ctx else_ ) of
+                        ( Ok tThen, Ok tElse ) ->
+                            if typesEqual ctx tThen tElse then
+                                Ok tThen
+                            else
+                                Err (TypeMismatch newCtx tThen tElse)
+
+                        ( Err err, _ ) ->
+                            Err err
+
+                        ( _, Err err ) ->
+                            Err err
+
+                Ok t ->
+                    Err (TypeMismatch { ctx | currentPos = cond.pos } Source.TypeBool t)
+
+                Err err ->
+                    Err err
 
         Source.ERawHoon _ ->
             Ok (Source.TypeRawHoon "any")

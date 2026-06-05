@@ -19,6 +19,14 @@ suite =
                                 |> addFunction "f" { type_args = [], input = [], output = Source.TypeNumber, body = loc (Source.EName "unknown") }
                     in
                     Typecheck.check prog |> Expect.equal (Err ["In functions.f.return at line 0, col 0: Unknown name: unknown"])
+            , test "Fails on unknown function call" <|
+                \_ ->
+                    let
+                        prog =
+                            emptyProgram
+                                |> addFunction "f" { type_args = [], input = [], output = Source.TypeNumber, body = loc (Source.ECall "jj" [ loc (Source.ENumber "42") ]) }
+                    in
+                    Typecheck.check prog |> Expect.equal (Err ["In functions.f.return at line 0, col 0: Unknown function: jj"])
             , test "Succeeds on correct return type" <|
                 \_ ->
                     let
@@ -64,6 +72,40 @@ suite =
                                 |> addFunction "f" { type_args = [], input = [ ( "u", Source.TypeNamed "User" ) ], output = Source.TypeNumber, body = loc (Source.EField (loc (Source.EName "u")) "oops") }
                     in
                     Typecheck.check prog |> Expect.equal (Err ["In functions.f.return at line 0, col 0: Type User does not have field: oops"])
+            ]
+        , describe "Expression Diagnostics"
+            [ test "Binary addition fails accurately on right operand" <|
+                \_ ->
+                    let
+                        prog =
+                            emptyProgram
+                                |> addFunction "f" { type_args = [], input = [], output = Source.TypeNumber, body = loc (Source.EBinary Source.Add (loc (Source.ENumber "1")) (loc (Source.EText "bad"))) }
+                    in
+                    Typecheck.check prog |> Expect.equal (Err ["In functions.f.return at line 0, col 0: Type mismatch: expected number, got text"])
+            , test "Binary addition fails accurately on left operand" <|
+                \_ ->
+                    let
+                        prog =
+                            emptyProgram
+                                |> addFunction "f" { type_args = [], input = [], output = Source.TypeNumber, body = loc (Source.EBinary Source.Add (loc (Source.EText "bad")) (loc (Source.ENumber "1"))) }
+                    in
+                    Typecheck.check prog |> Expect.equal (Err ["In functions.f.return at line 0, col 0: Type mismatch: expected number, got text"])
+            , test "If condition fails if not boolean" <|
+                \_ ->
+                    let
+                        prog =
+                            emptyProgram
+                                |> addFunction "f" { type_args = [], input = [], output = Source.TypeNumber, body = loc (Source.EIf (loc (Source.ENumber "1")) (loc (Source.ENumber "2")) (loc (Source.ENumber "3"))) }
+                    in
+                    Typecheck.check prog |> Expect.equal (Err ["In functions.f.return at line 0, col 0: Type mismatch: expected bool, got number"])
+            , test "If branches fail if types do not match" <|
+                \_ ->
+                    let
+                        prog =
+                            emptyProgram
+                                |> addFunction "f" { type_args = [], input = [], output = Source.TypeNumber, body = loc (Source.EIf (loc (Source.EBool True)) (loc (Source.ENumber "2")) (loc (Source.EText "bad"))) }
+                    in
+                    Typecheck.check prog |> Expect.equal (Err ["In functions.f.return at line 0, col 0: Type mismatch: expected number, got text"])
             ]
         ]
 

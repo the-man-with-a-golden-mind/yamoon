@@ -1,5 +1,6 @@
 module Source.ExprParser exposing (parse)
 
+import Dict exposing (Dict)
 import Parser exposing (..)
 import Set
 import Source.Ast exposing (BinaryOp(..), Expr(..), LocatedExpr, Pos)
@@ -128,9 +129,10 @@ buildBinaryExpr revOps right =
 termParser : Parser Expr
 termParser =
     oneOf
-        [ literalParser
-        , nameOrCallParser
+        [ nameOrCallParser
+        , literalParser
         , parensExprParser
+        , objectLiteralParser
         ]
         |> andThen fieldAccessHelp
 
@@ -162,13 +164,13 @@ literalParser =
 
 numberParser : Parser Expr
 numberParser =
-    number
-        { int = Just (\i -> ENumber (String.fromInt i))
-        , hex = Nothing
-        , octal = Nothing
-        , binary = Nothing
-        , float = Nothing
-        }
+    backtrackable <|
+        (getChompedString (chompIf Char.isDigit |. chompWhile Char.isDigit)
+            |> andThen
+                (\s ->
+                    succeed (ENumber s)
+                )
+        )
 
 
 stringParser : Parser Expr
@@ -227,39 +229,45 @@ stringPartParser acc =
 boolParser : Parser Expr
 boolParser =
     oneOf
-        [ keyword "true" |> map (\_ -> EBool True)
-        , keyword "false" |> map (\_ -> EBool False)
+        [ backtrackable (keyword "true") |> map (\_ -> EBool True)
+        , backtrackable (keyword "false") |> map (\_ -> EBool False)
         ]
 
 
 nameOrCallParser : Parser Expr
 nameOrCallParser =
-    nameParser
-        |> andThen
-            (\name ->
-                oneOf
-                    [ backtrackable
-                        (succeed (ECall name)
-                            |. spaces
-                            |. symbol "("
-                            |. spaces
-                            |= sepBy (succeed () |. spaces |. symbol "," |. spaces) (lazy (\_ -> locatedExprParser))
-                            |. spaces
-                            |. symbol ")"
-                        )
-                    , succeed (EName name)
-                    ]
-            )
+    backtrackable <|
+        (nameParser
+            |> andThen
+                (\name ->
+                    if name == "true" || name == "false" then
+                        problem "keyword"
+
+                    else
+                        oneOf
+                            [ backtrackable
+                                (succeed (ECall name)
+                                    |. spaces
+                                    |. symbol "("
+                                    |. spaces
+                                    |= sepBy (succeed () |. spaces |. symbol "," |. spaces) (lazy (\_ -> locatedExprParser))
+                                    |. spaces
+                                    |. symbol ")"
+                                )
+                            , succeed (EName name)
+                            ]
+                )
+        )
 
 
 nameParser : Parser String
 nameParser =
     let
         isStart c =
-            Char.isLower c || c == '.' || c == '^' || c == '$'
+            Char.isLower c || c == '.' || c == '^' || c == '$' || c == '%'
 
         isInner c =
-            Char.isAlphaNum c || c == '_' || c == '-' || c == '^'
+            Char.isAlphaNum c || c == '_' || c == '-' || c == '^' || c == '%'
     in
     getChompedString <|
         succeed ()
@@ -275,6 +283,26 @@ parensExprParser =
         |= (lazy (\_ -> binaryExprParser))
         |. spaces
         |. symbol ")"
+
+
+objectLiteralParser : Parser Expr
+objectLiteralParser =
+    succeed (\fields -> EDict (Dict.fromList fields))
+        |. symbol "{"
+        |. spaces
+        |= sepBy (succeed () |. spaces |. symbol "," |. spaces) objectFieldParser
+        |. spaces
+        |. symbol "}"
+
+
+objectFieldParser : Parser ( String, LocatedExpr )
+objectFieldParser =
+    succeed (\name val -> ( name, val ))
+        |= nameParser
+        |. spaces
+        |. symbol ":"
+        |. spaces
+        |= lazy (\_ -> locatedExprParser)
 
 
 sepBy : Parser () -> Parser a -> Parser (List a)

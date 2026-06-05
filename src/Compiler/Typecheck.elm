@@ -2,6 +2,7 @@ module Compiler.Typecheck exposing (check)
 
 import Dict exposing (Dict)
 import Source.Ast as Source
+import Source.StandardLibrary as StdLib
 
 
 type Error
@@ -16,6 +17,7 @@ type Error
     | UnknownVariant Context String String
     | UnknownPokeRoute Context String
     | MissingTestSubject Context String
+    | GenericConflict Context String Source.TypeRef Source.TypeRef
 
 
 check : Source.Program -> Result (List String) ()
@@ -37,11 +39,17 @@ check prog =
                 Nothing ->
                     prog.types
 
+        allNatives =
+            Dict.union prog.native StdLib.standardNatives
+
         ctx =
             { types = ctxTypes
             , constants = prog.constants
             , functions = prog.functions
+            , native = allNatives
             , localVars = baseLocalVars
+            , typeArgs = []
+            , typeBindings = Dict.empty
             , path = []
             , currentPos = { line = 0, col = 0 }
             }
@@ -67,7 +75,10 @@ type alias Context =
     { types : Dict String Source.TypeDef
     , constants : Dict String Source.TypedValueOrExpr
     , functions : Dict String Source.FunctionDef
+    , native : Dict String Source.NativeDef
     , localVars : Dict String Source.TypeRef
+    , typeArgs : List String
+    , typeBindings : Dict String Source.TypeRef
     , path : List String
     , currentPos : Source.Pos
     }
@@ -185,7 +196,7 @@ checkFunction ctx _ def =
             List.foldl (\( k, v ) acc -> Dict.insert k v acc) Dict.empty def.input
 
         newCtx =
-            { ctx | localVars = newLocalVars, path = ctx.path ++ [ "return" ] }
+            { ctx | localVars = newLocalVars, path = ctx.path ++ [ "return" ], typeArgs = def.type_args }
 
         returnTypeResult =
             inferExprType newCtx def.body
@@ -270,22 +281,26 @@ inferExprType ctx le =
                 realName =
                     dropCarets name
             in
-            case Dict.get realName ctx.localVars of
-                Just t ->
-                    Ok t
+            if List.member realName ctx.typeArgs then
+                Ok (Source.TypeNamed realName)
 
-                Nothing ->
-                    case Dict.get realName ctx.constants of
-                        Just tve ->
-                            case tve.type_ of
-                                Just t ->
-                                    Ok t
+            else
+                case Dict.get realName ctx.localVars of
+                    Just t ->
+                        Ok t
 
-                                Nothing ->
-                                    Ok (inferLiteralType ctx Nothing (extractLiteral tve.value))
+                    Nothing ->
+                        case Dict.get realName ctx.constants of
+                            Just tve ->
+                                case tve.type_ of
+                                    Just t ->
+                                        Ok t
 
-                        _ ->
-                            Err (UnknownName newCtx name)
+                                    Nothing ->
+                                        Ok (inferLiteralType ctx Nothing (extractLiteral tve.value))
+
+                            _ ->
+                                Err (UnknownName newCtx name)
 
         Source.EField e field ->
             case inferExprType ctx e of
@@ -334,6 +349,14 @@ inferExprType ctx le =
                     if expectedArity /= actualArity then
                         Err (ArityMismatch newCtx name expectedArity actualArity)
 
+                    else if not (List.isEmpty def.type_args) then
+                        case instantiate ctx def.type_args (List.map Tuple.second def.input) args of
+                            Ok bindings ->
+                                Ok (substitute bindings def.output)
+
+                            Err err ->
+                                Err err
+
                     else
                         case checkArgs ctx (List.map Tuple.second def.input) args of
                             Ok () ->
@@ -343,7 +366,36 @@ inferExprType ctx le =
                                 Err err
 
                 Nothing ->
-                    checkBuiltin newCtx name args
+                    case Dict.get name ctx.native of
+                        Just nativeDef ->
+                            let
+                                expectedArity =
+                                    List.length nativeDef.input
+
+                                actualArity =
+                                    List.length args
+                            in
+                            if expectedArity /= actualArity then
+                                Err (ArityMismatch newCtx name expectedArity actualArity)
+
+                            else if not (List.isEmpty nativeDef.type_args) then
+                                case instantiate ctx nativeDef.type_args (List.map Tuple.second nativeDef.input) args of
+                                    Ok bindings ->
+                                        Ok (substitute bindings nativeDef.output)
+
+                                    Err err ->
+                                        Err err
+
+                            else
+                                case checkArgs ctx (List.map Tuple.second nativeDef.input) args of
+                                    Ok () ->
+                                        Ok nativeDef.output
+
+                                    Err err ->
+                                        Err err
+
+                        Nothing ->
+                            checkBuiltin newCtx name args
 
         Source.ERecord typeName _ ->
             Ok (Source.TypeNamed typeName)
@@ -362,7 +414,7 @@ inferExprType ctx le =
                     Err (NotAUnion newCtx (Source.TypeNamed typeName))
 
         Source.EDict _ ->
-            Ok Source.TypeNumber
+            Ok (Source.TypeRawHoon "any")
 
         Source.ERune _ args ->
             let
@@ -461,7 +513,103 @@ inferExprType ctx le =
             inferExprType ctx then_
 
         Source.ERawHoon _ ->
-            Ok Source.TypeNumber
+            Ok (Source.TypeRawHoon "any")
+
+
+instantiate : Context -> List String -> List Source.TypeRef -> List Source.LocatedExpr -> Result Error (Dict String Source.TypeRef)
+instantiate ctx typeArgs expected actual =
+    let
+        unifyAll es as_ bindings =
+            case ( es, as_ ) of
+                ( [], [] ) ->
+                    Ok bindings
+
+                ( e :: restE, a :: restA ) ->
+                    case inferExprType ctx a of
+                        Ok actualType ->
+                            case unify ctx typeArgs e actualType bindings of
+                                Ok nextBindings ->
+                                    unifyAll restE restA nextBindings
+
+                                Err err ->
+                                    Err err
+
+                        Err err ->
+                            Err err
+
+                _ ->
+                    Ok bindings
+    in
+    unifyAll expected actual Dict.empty
+
+
+unify : Context -> List String -> Source.TypeRef -> Source.TypeRef -> Dict String Source.TypeRef -> Result Error (Dict String Source.TypeRef)
+unify ctx typeArgs expected actual bindings =
+    case ( expected, actual ) of
+        ( Source.TypeNamed name, _ ) ->
+            if List.member name typeArgs then
+                case Dict.get name bindings of
+                    Just existing ->
+                        if typesEqual ctx existing actual then
+                            Ok bindings
+
+                        else
+                            Err (GenericConflict { ctx | currentPos = ctx.currentPos } name existing actual)
+
+                    Nothing ->
+                        Ok (Dict.insert name actual bindings)
+
+            else if typesEqual ctx expected actual then
+                Ok bindings
+
+            else
+                Err (TypeMismatch { ctx | currentPos = ctx.currentPos } expected actual)
+
+        ( Source.TypeList e1, Source.TypeList e2 ) ->
+            unify ctx typeArgs e1 e2 bindings
+
+        ( Source.TypePair h1 t1, Source.TypePair h2 t2 ) ->
+            unify ctx typeArgs h1 h2 bindings
+                |> Result.andThen (unify ctx typeArgs t1 t2)
+
+        ( Source.TypeMap k1 v1, Source.TypeMap k2 v2 ) ->
+            unify ctx typeArgs k1 k2 bindings
+                |> Result.andThen (unify ctx typeArgs v1 v2)
+
+        ( Source.TypeUnit e1, Source.TypeUnit e2 ) ->
+            unify ctx typeArgs e1 e2 bindings
+
+        _ ->
+            if typesEqual ctx expected actual then
+                Ok bindings
+
+            else
+                Err (TypeMismatch { ctx | currentPos = ctx.currentPos } expected actual)
+
+
+substitute : Dict String Source.TypeRef -> Source.TypeRef -> Source.TypeRef
+substitute bindings tr =
+    case tr of
+        Source.TypeNamed name ->
+            Dict.get name bindings |> Maybe.withDefault tr
+
+        Source.TypeList inner ->
+            Source.TypeList (substitute bindings inner)
+
+        Source.TypePair a b ->
+            Source.TypePair (substitute bindings a) (substitute bindings b)
+
+        Source.TypeMap k v ->
+            Source.TypeMap (substitute bindings k) (substitute bindings v)
+
+        Source.TypeUnit inner ->
+            Source.TypeUnit (substitute bindings inner)
+
+        Source.TypeQuip a b ->
+            Source.TypeQuip (substitute bindings a) (substitute bindings b)
+
+        _ ->
+            tr
 
 
 checkBuiltin : Context -> String -> List Source.LocatedExpr -> Result Error Source.TypeRef
@@ -585,6 +733,18 @@ checkBuiltin ctx name args =
             _ ->
                 Err (ArityMismatch ctx "map" 2 (List.length args))
 
+    else if name == "fold" then
+        Ok (Source.TypeRawHoon "any")
+
+    else if name == "give" then
+        Ok (Source.TypeCard)
+
+    else if name == "init" then
+        Ok (Source.TypeRawHoon "any")
+
+    else if name == "my" then
+        Ok (Source.TypeMap Source.TypeNumber Source.TypeNumber)
+
     else if name == "recurse" then
         Ok (Source.TypeRawHoon "any")
 
@@ -630,6 +790,14 @@ checkBuiltin ctx name args =
             _ ->
                 Err (ArityMismatch ctx "has" 2 (List.length args))
 
+    else if name == "nock" then
+        case args of
+            [ _ ] ->
+                Ok (Source.TypeRawHoon "any")
+
+            _ ->
+                Err (ArityMismatch ctx "nock" 1 (List.length args))
+
     else
         Err (UnknownFunction ctx name)
 
@@ -659,6 +827,9 @@ checkArgs ctx expected actual =
 resolveType : Context -> Source.TypeRef -> Source.TypeRef
 resolveType ctx tr =
     case tr of
+        Source.TypeNamed "any" ->
+            Source.TypeRawHoon "any"
+
         Source.TypeNamed name ->
             case Dict.get name ctx.types of
                 Just (Source.Alias inner) ->
@@ -726,7 +897,7 @@ inferLiteralType ctx expected val =
         Source.LitVariant typeName _ _ ->
             Source.TypeNamed typeName
 
-        Source.LitObject obj ->
+        Source.LitObject _ ->
             case expected of
                 Just tr ->
                     case resolveType ctx tr of
@@ -736,13 +907,13 @@ inferLiteralType ctx expected val =
                                     Source.TypeNamed name
 
                                 _ ->
-                                    Source.TypeNumber
+                                    Source.TypeRawHoon "any"
 
                         _ ->
-                            Source.TypeNumber
+                            Source.TypeRawHoon "any"
 
                 Nothing ->
-                    Source.TypeNumber
+                    Source.TypeRawHoon "any"
 
 
 inferListElements : Context -> List Source.LiteralValue -> Source.TypeRef
@@ -770,6 +941,15 @@ typesEqual ctx a b =
 
         ( _, Source.TypeRawHoon "any" ) ->
             True
+            
+        ( Source.TypeRawHoon r1, Source.TypeRawHoon r2 ) ->
+            r1 == r2
+
+        ( Source.TypeNamed n1, Source.TypeRawHoon r2 ) ->
+            n1 == r2
+
+        ( Source.TypeRawHoon r1, Source.TypeNamed n2 ) ->
+            r1 == n2
 
         ( Source.TypeNumber, Source.TypeNat ) ->
             True
@@ -877,6 +1057,9 @@ errorToString err =
 
         MissingTestSubject ctx name ->
             formatError ctx ("Missing test subject: " ++ name)
+
+        GenericConflict ctx name expected actual ->
+            formatError ctx ("Generic type parameter '" ++ name ++ "' bound to conflicting types: " ++ typeRefToString expected ++ " and " ++ typeRefToString actual)
 
 
 formatError : Context -> String -> String

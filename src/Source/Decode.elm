@@ -21,12 +21,12 @@ decode json =
 programDecoder : Decoder Ast.Program
 programDecoder =
     Decode.succeed
-        (\module_ docs options imports types macros state onLoad pokes watches scries constants functions tests ->
+        (\module_ docs options imports types macros native state onLoad pokes watches scries constants functions tests ->
             let
                 newOptions =
                     { options | prog_context_types = types }
             in
-            Ast.Program module_ docs newOptions imports types macros state onLoad pokes watches scries constants functions tests
+            Ast.Program module_ docs newOptions imports types macros native state onLoad pokes watches scries constants functions tests
         )
         |> required "module" Decode.string
         |> optional "docs" (Decode.list Decode.string) []
@@ -34,6 +34,7 @@ programDecoder =
         |> optional "imports" (Decode.list Decode.string) []
         |> optional "types" (Decode.dict typeDefDecoder) Dict.empty
         |> optional "macros" (Decode.dict macroDefDecoder) Dict.empty
+        |> optional "native" (Decode.dict nativeDefDecoder) Dict.empty
         |> optional "state" (Decode.maybe stateDefDecoder) Nothing
         |> optional "on_load" (Decode.maybe locatedExprDecoder) Nothing
         |> optional "pokes" (Decode.dict pokeDefDecoder) Dict.empty
@@ -57,6 +58,14 @@ stateDefDecoder =
     Decode.succeed StateDef
         |> required "version" Decode.int
         |> required "data" (Decode.dict typeRefDecoder)
+
+
+nativeDefDecoder : Decoder NativeDef
+nativeDefDecoder =
+    Decode.succeed NativeDef
+        |> optional "type_args" (Decode.list Decode.string) []
+        |> optional "input" inputListDecoder []
+        |> required "output" typeRefDecoder
 
 
 pokeDefDecoder : Decoder PokeDef
@@ -449,6 +458,7 @@ literalValueDecoder =
 functionDefDecoder : Decoder FunctionDef
 functionDefDecoder =
     Decode.succeed FunctionDef
+        |> optional "type_args" (Decode.list Decode.string) []
         |> optional "input" inputListDecoder []
         |> required "output" typeRefDecoder
         |> required "return" locatedExprDecoder
@@ -639,9 +649,6 @@ exprDecoder =
                                                 ERecord variantName variantFields ->
                                                     if isUppercase variantName then
                                                         let
-                                                            isNone le =
-                                                                le.expr == ECall "unit" []
-
                                                             normalizedFields =
                                                                 case Dict.get variantName variantFields of
                                                                     Just fieldLe ->

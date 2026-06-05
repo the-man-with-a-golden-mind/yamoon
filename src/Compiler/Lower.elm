@@ -98,7 +98,6 @@ lowerUnitTest name data =
 lowerScenarioTest : Source.Program -> String -> Source.ScenarioTestData -> Hoon.HoonArm
 lowerScenarioTest prog name data =
     let
-        -- Scenario lowering generates a sequence of bindings that thread the agent state
         init =
             Hoon.HLet "state" (Hoon.HName data.setup) <|
                 Hoon.HLet "bowl" (Hoon.HRaw "mock-bowl") <|
@@ -357,8 +356,6 @@ lowerOnPeek prog =
                                     |> List.map (\s -> "%" ++ s)
                                     |> (\parts -> "[" ++ String.join " " parts ++ " ~]")
 
-                            -- Real on-peek returns (unit (unit cage))
-                            -- We wrap the result: [~ ~ %tas !>(result)] (simplified for now)
                             scryBody =
                                 Hoon.HRaw ("[~ ~ %tas !>(" ++ renderHoonExprForRaw (lowerExpr prog.options def.body) ++ ")]")
                         in
@@ -643,8 +640,18 @@ lowerFunctions prog =
                     body =
                         lowerExpr prog.options def.body
                 in
-                Hoon.HoonArm name (Hoon.HGate inputs body)
+                if List.isEmpty def.type_args then
+                    Hoon.HoonArm name (Hoon.HGate inputs body)
+                else
+                    Hoon.HoonArm name (Hoon.HRaw ("|*  " ++ renderWetGateInputs inputs ++ "\n" ++ indent (renderHoonExprForRaw body)))
             )
+
+renderWetGateInputs : List (String, Hoon.HoonMold) -> String
+renderWetGateInputs inputs =
+    case inputs of
+        [] -> "*"
+        [(name, _)] -> name ++ "=*"
+        _ -> "[" ++ (List.map (\(n, _) -> n ++ "=*") inputs |> String.join " ") ++ "]"
 
 
 lowerExpr : Source.Options -> Source.LocatedExpr -> Hoon.HoonExpr
@@ -991,6 +998,9 @@ isUppercase s =
 resolveSourceType : Source.Options -> Source.TypeRef -> Source.TypeRef
 resolveSourceType opts tr =
     case tr of
+        Source.TypeNamed "any" ->
+            Source.TypeRawHoon "any"
+
         Source.TypeNamed name ->
             case Dict.get name opts.prog_context_types of
                 Just (Source.Alias inner) ->
@@ -1267,3 +1277,11 @@ lowerTypeRef opts tr =
 loc : Hoon.HoonExpr -> Hoon.LocatedHoonExpr
 loc e =
     { pos = { line = 0, col = 0 }, expr = e }
+
+
+indent : String -> String
+indent s =
+    s
+        |> String.split "\n"
+        |> List.map (\line -> "  " ++ line)
+        |> String.join "\n"

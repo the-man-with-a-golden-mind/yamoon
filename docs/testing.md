@@ -1,92 +1,71 @@
-# Testing with yamoon
+# Testing in yamoon
 
-yamoon features a first-of-its-kind, declarative testing framework built directly into the language. You can define your tests alongside your code in the same `.hyml` file, and the compiler will automatically generate idiomatic Hoon `+test` generators.
+Yamoon provides a comprehensive, multi-layer testing strategy to ensure that your code is not just syntactically correct, but logically sound and strictly Urbit-compliant.
 
-## 1. Pure Unit Tests
+## 1. Production vs. Test Isolation
 
-Test your logic functions by providing a list of input/expect pairs.
+**Yamoon strictly isolates test code from production code.** 
+When you write a `tests:` block in your `.hyml` file, it is **never** included in the standard production output.
 
+*   `yamoon compile <file.hyml>`: Generates *only* the production Gall agent or Library core (`|%` or `|_`).
+*   `yamoon test <file.hyml>`: Generates *only* the isolated Urbit `+test` generator (which imports `/+  test` and uses `expect-eq`).
+
+This ensures your production pier is never bloated with testing boilerplate.
+
+## 2. Docker-Based Urbit Verification (Gold Standard)
+
+To be 100% sure that the generated Hoon is correct, you can run a full end-to-end verification in a containerized Urbit environment. This guarantees that your tests evaluate to the correct values when run through the actual Nock VM.
+
+### The Pipeline Workflow:
+1.  **Boot**: A real Urbit binary is downloaded and boots a fake `~zod` development ship.
+2.  **Compile & Isolate**: Yamoon compiles your `.hyml` files, separating the logic into production code (`zod/base/lib/`) and test code (`zod/base/tests/lib/`).
+3.  **Sync**: The generated Hoon files are injected into the ship's filesystem.
+4.  **Execute**: The native Urbit `-test` runner is triggered via the Dojo.
+5.  **Evaluate**: The script asserts that the Nock VM successfully executed your code and that all `expect-eq` assertions passed.
+
+### How to Run:
+```bash
+# Requires Docker to be installed and running on your machine
+bun run test:docker
+```
+
+## 3. Writing Tests in .hyml
+
+### Unit Tests
+Test pure functions by providing input/expect pairs.
 ```yaml
-functions:
-  square:
-    input: { n: number }
-    output: number
-    return: n * n
-
 tests:
   square_logic:
     kind: unit
     func: square
     cases:
-      - input: { n: 4 }
+      - input: { x: 4 }
         expect: 16
-      - input: { n: 0 }
-        expect: 0
-    # Future: Automatically generates property tests based on the `number` type!
-    fuzz: true 
 ```
 
-## 2. Stateful Scenario Tests (Gall Agents)
-
-Testing Gall agents is notoriously verbose in Hoon. yamoon's "Scenario" DSL eliminates the boilerplate of state threading and manual dispatch.
-
+### Scenario Tests (Amazing Testing Framework)
+Test stateful Gall agents by defining a journey. Yamoon automatically threads the agent state through a sequence of interactions.
 ```yaml
 tests:
-  todo_lifecycle:
+  counter_journey:
     kind: scenario
-    # Automatically starts with the agent's `initialState`
-    setup: initialState 
+    setup: initialState
     steps:
-      # Step 1: Add a task
-      - action: poke
-        route: addTask
-        payload: { title: "Buy milk" }
+      - action: { action: "poke", route: "increment", payload: { amount: 5 } }
         expect:
-          # Assert against your agent's scry endpoints!
-          scries: 
-            /tasks: [{ id: 1, title: "Buy milk", done: false }]
-
-      # Step 2: Toggle a task (automatically uses the state from Step 1)
-      - action: poke
-        route: toggleTask
-        payload: { id: 1 }
+          state: { count: 5 }
+      - action: { action: "wait", duration: "~h1" }
         expect:
-          scries:
-            /tasks: [{ id: 1, title: "Buy milk", done: true }]
-
-      # Step 3: Advance virtual time
-      - action: wait
-        duration: ~h1
+          scries: { "/count": 5 }
 ```
 
-## 3. Migration Tests
-
-Easily verify that your `on_load` logic correctly handles old state versions.
-
-```yaml
-tests:
-  v0_to_v1_migration:
-    kind: migration
-    from_version: 0
-    old_state: "[%0 count=5]" # Raw Hoon noun representing old state
-    expect_state:
-      count: 5
-      new_field: "default"
-```
-
-## 4. Running Tests
-
-To generate a Hoon test file from your yamoon project, use the `test` command:
-
+## 4. Manual Verification
+You can manually sync your code to a local pier and run tests in the Dojo without Docker.
 ```bash
-yamoon test my_agent.hyml > tests/my_agent_test.hoon
+# 1. Sync
+yamoon sync my_agent.hyml /path/to/pier
+
+# 2. In Dojo
+|mount %base
+-test /=base=/tests/lib/my_agent
 ```
-
-The output is a standard Urbit `+test` generator that can be run using the native Urbit test runner.
-
-## Why it's Better
-
-*   **Zero Boilerplate**: No more manual state threading or `+on-poke` dispatch code in tests.
-*   **Behavioral Focus**: Tests read like user stories or functional requirements.
-*   **Type-Safe**: Test inputs and expectations are validated against your actual schemas during compilation.
-*   **Integrated**: Keep your documentation, code, and tests in a single, readable YAML file.

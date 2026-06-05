@@ -1,0 +1,32 @@
+module: examples.native_libs
+
+imports:
+  - /+  ja
+  - /+  html-utils
+
+functions:
+  # 'ja' is a standard library already in Yamoon's context
+  initMap:
+    input: { a: number, b: number }
+    output: ja-door
+    return: "ja({ a: a, b: b })"
+
+  # 'html-utils' is a user-defined native library
+  toManx:
+    input: { s: text }
+    output: any
+    return: "html(s)"
+
+native:
+  html:
+    type_args: []
+    input: { data: text }
+    output: any
+
+tests:
+  verify_standard:
+    kind: unit
+    func: initMap
+    cases:
+      - input: { a: 1, b: 2 }
+        expect: { a: 1, b: 2 }

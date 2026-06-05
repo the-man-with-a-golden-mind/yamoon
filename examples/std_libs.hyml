@@ -1,0 +1,33 @@
+module: examples.std_libs
+
+imports:
+  - /+  json
+  - /+  html-utils
+
+functions:
+  # json is a standard library already in Yamoon's context
+  renderJson:
+    input: { val: json }
+    output: text
+    return: "json(val)"
+
+  # enjs is a high-level helper for json encoding
+  toJson:
+    type_args: [T]
+    input: { data: T }
+    output: json
+    return: "enjs(data)"
+
+  # html XML utilities
+  renderPage:
+    input: { title: text }
+    output: manx
+    return: "html(title)"
+
+tests:
+  verify_enjs:
+    kind: unit
+    func: toJson
+    cases:
+      - input: { data: { x: 1 } }
+        expect: { x: 1 }

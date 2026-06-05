@@ -10,6 +10,7 @@ type alias Program =
     , imports : List String
     , types : Dict String TypeDef
     , macros : Dict String MacroDef
+    , native : Dict String NativeDef
     , state : Maybe StateDef
     , onLoad : Maybe LocatedExpr
     , pokes : Dict String PokeDef
@@ -18,6 +19,13 @@ type alias Program =
     , constants : Dict String TypedValueOrExpr
     , functions : Dict String FunctionDef
     , tests : Dict String TestDef
+    }
+
+
+type alias NativeDef =
+    { type_args : List String
+    , input : List ( String, TypeRef )
+    , output : TypeRef
     }
 
 
@@ -158,7 +166,8 @@ type LiteralValue
 
 
 type alias FunctionDef =
-    { input : List ( String, TypeRef )
+    { type_args : List String
+    , input : List ( String, TypeRef )
     , output : TypeRef
     , body : LocatedExpr
     }

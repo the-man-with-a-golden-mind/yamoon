@@ -1,16 +1,31 @@
 module: examples.generic_runes
 
 functions:
-  complexNock:
-    input:
-      val: number
-    output: number
-    return:
-      rune: "|-"
-      args:
-        - rune: "?:"
-          args:
-            - val == 0
-            - 42
-            - rune: "$@"
-              args: []
+  # A truly generic identity function
+  identity:
+    type_args: [T]
+    input: { val: T }
+    output: T
+    return: val
+
+  # Mapping over a list with a generic function
+  # Note: native list mapping is already built-in, but this shows custom usage
+  wrapList:
+    type_args: [A]
+    input: { items: list<A> }
+    output: list<A>
+    return: items
+
+  # Using the generic identity function
+  testLogic:
+    input: { n: number, s: text }
+    output: pair<number, text>
+    return: "cell(identity(n), identity(s))"
+
+tests:
+  verify_polymorphism:
+    kind: unit
+    func: testLogic
+    cases:
+      - input: { n: 10, s: "hello" }
+        expect: [10, "hello"]

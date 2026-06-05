@@ -1,6 +1,6 @@
 {
   "name": "yamoon",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "type": "module",
   "main": "index.js",
   "bin": {
@@ -13,7 +13,9 @@
   },
   "scripts": {
     "yamoon": "node wrapper/cli.js",
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "npx elm make src/Main.elm --output=wrapper/elm.js --optimize && mv wrapper/elm.js wrapper/elm.cjs",
+    "test": "npx elm-test",
+    "test:docker": "docker build -f docker/Dockerfile -t yamoon-test . && docker run --rm yamoon-test",
     "ide:build": "cd ide && npx elm make src/Main.elm --output=public/elm.js --optimize"
   },
   "keywords": [],

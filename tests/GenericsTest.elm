@@ -56,6 +56,25 @@ suite =
                             |> addFunction "test" { type_args = [], input = [ ( "my_map", Source.TypeMap Source.TypeText Source.TypeNumber ) ], output = Source.TypeUnit Source.TypeNumber, body = loc (Source.ECall "lookup" [ loc (Source.EName "my_map"), loc (Source.EText "key") ]) }
                 in
                 Typecheck.check prog |> Expect.ok
+        , test "Fails when generic parameter cannot be inferred (unbound)" <|
+            \_ ->
+                let
+                    prog =
+                        emptyProgram
+                            |> addFunction "pure" { type_args = [ "T" ], input = [], output = Source.TypeList (Source.TypeNamed "T"), body = loc (Source.EList []) }
+                            |> addFunction "test" { type_args = [], input = [], output = Source.TypeList Source.TypeNumber, body = loc (Source.ECall "pure" []) }
+                in
+                Typecheck.check prog |> Expect.equal (Err [ "In functions.pure.return at line 0, col 0: Type mismatch: expected list<T>, got list<number>", "In functions.test.return at line 0, col 0: Cannot infer type for generic parameter 'T'. It is not used in the input arguments." ])
+        , test "Correctly parses and checks nested generic types" <|
+            \_ ->
+                let
+                    nestedPair = Source.TypePair (Source.TypePair Source.TypeText Source.TypeNumber) Source.TypeBool
+                    prog =
+                        emptyProgram
+                            |> addFunction "getInner" { type_args = [ "A", "B", "C" ], input = [ ( "p", Source.TypePair (Source.TypePair (Source.TypeNamed "A") (Source.TypeNamed "B")) (Source.TypeNamed "C") ) ], output = Source.TypeNamed "A", body = loc (Source.EField (loc (Source.EField (loc (Source.EName "p")) "p")) "p") }
+                            |> addFunction "test" { type_args = [], input = [ ( "my_pair", nestedPair ) ], output = Source.TypeText, body = loc (Source.ECall "getInner" [ loc (Source.EName "my_pair") ]) }
+                in
+                Typecheck.check prog |> Expect.ok
         ]
 
 

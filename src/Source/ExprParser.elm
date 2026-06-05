@@ -1,4 +1,4 @@
-module Source.ExprParser exposing (parse)
+module Source.ExprParser exposing (parse, nameParser)
 
 import Dict exposing (Dict)
 import Parser exposing (..)
@@ -133,6 +133,7 @@ termParser =
         , literalParser
         , parensExprParser
         , objectLiteralParser
+        , listLiteralParser
         ]
         |> andThen fieldAccessHelp
 
@@ -264,7 +265,7 @@ nameParser : Parser String
 nameParser =
     let
         isStart c =
-            Char.isLower c || c == '.' || c == '^' || c == '$' || c == '%'
+            Char.isLower c || Char.isUpper c || c == '.' || c == '^' || c == '$' || c == '%'
 
         isInner c =
             Char.isAlphaNum c || c == '_' || c == '-' || c == '^' || c == '%'
@@ -303,6 +304,40 @@ objectFieldParser =
         |. symbol ":"
         |. spaces
         |= lazy (\_ -> locatedExprParser)
+
+
+listLiteralParser : Parser Expr
+listLiteralParser =
+    succeed EList
+        |. symbol "["
+        |. spaces
+        |= listElementsParser
+        |. spaces
+        |. symbol "]"
+
+
+listElementsParser : Parser (List LocatedExpr)
+listElementsParser =
+    oneOf
+        [ succeed (::)
+            |= lazy (\_ -> locatedExprParser)
+            |= loop [] listElementsHelp
+        , succeed []
+        ]
+
+
+listElementsHelp : List LocatedExpr -> Parser (Step (List LocatedExpr) (List LocatedExpr))
+listElementsHelp acc =
+    oneOf
+        [ backtrackable
+            (succeed (\expr -> Loop (acc ++ [ expr ]))
+                |. spaces
+                |. oneOf [ symbol ",", succeed () ]
+                |. spaces
+                |= lazy (\_ -> locatedExprParser)
+            )
+        , succeed (Done acc)
+        ]
 
 
 sepBy : Parser () -> Parser a -> Parser (List a)

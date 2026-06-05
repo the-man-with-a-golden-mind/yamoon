@@ -18,6 +18,7 @@ type Error
     | UnknownPokeRoute Context String
     | MissingTestSubject Context String
     | GenericConflict Context String Source.TypeRef Source.TypeRef
+    | UnboundGeneric Context String
 
 
 check : Source.Program -> Result (List String) ()
@@ -352,7 +353,11 @@ inferExprType ctx le =
                     else if not (List.isEmpty def.type_args) then
                         case instantiate ctx def.type_args (List.map Tuple.second def.input) args of
                             Ok bindings ->
-                                Ok (substitute bindings def.output)
+                                case findUnbound def.type_args bindings of
+                                    Just unbound ->
+                                        Err (UnboundGeneric newCtx unbound)
+                                    Nothing ->
+                                        Ok (substitute bindings def.output)
 
                             Err err ->
                                 Err err
@@ -381,7 +386,11 @@ inferExprType ctx le =
                             else if not (List.isEmpty nativeDef.type_args) then
                                 case instantiate ctx nativeDef.type_args (List.map Tuple.second nativeDef.input) args of
                                     Ok bindings ->
-                                        Ok (substitute bindings nativeDef.output)
+                                        case findUnbound nativeDef.type_args bindings of
+                                            Just unbound ->
+                                                Err (UnboundGeneric newCtx unbound)
+                                            Nothing ->
+                                                Ok (substitute bindings nativeDef.output)
 
                                     Err err ->
                                         Err err
@@ -413,8 +422,18 @@ inferExprType ctx le =
                 _ ->
                     Err (NotAUnion newCtx (Source.TypeNamed typeName))
 
-        Source.EDict _ ->
-            Ok (Source.TypeRawHoon "any")
+        Source.EDict fields ->
+            case Dict.values fields of
+                [] ->
+                    Ok (Source.TypeMap Source.TypeText (Source.TypeRawHoon "any"))
+
+                x :: _ ->
+                    case inferExprType ctx x of
+                        Ok tx ->
+                            Ok (Source.TypeMap Source.TypeText tx)
+                        
+                        Err err ->
+                            Err err
 
         Source.ERune _ args ->
             let
@@ -1128,6 +1147,18 @@ typeRefToString tr =
             "raw-hoon<" ++ s ++ ">"
 
 
+findUnbound : List String -> Dict String Source.TypeRef -> Maybe String
+findUnbound args bindings =
+    case args of
+        [] ->
+            Nothing
+            
+        arg :: rest ->
+            if Dict.member arg bindings then
+                findUnbound rest bindings
+            else
+                Just arg
+
 errorToString : Error -> String
 errorToString err =
     case err of
@@ -1166,6 +1197,9 @@ errorToString err =
 
         GenericConflict ctx name expected actual ->
             formatError ctx ("Generic type parameter '" ++ name ++ "' bound to conflicting types: " ++ typeRefToString expected ++ " and " ++ typeRefToString actual)
+
+        UnboundGeneric ctx name ->
+            formatError ctx ("Cannot infer type for generic parameter '" ++ name ++ "'. It is not used in the input arguments.")
 
 
 formatError : Context -> String -> String

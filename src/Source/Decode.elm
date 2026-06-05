@@ -3,7 +3,7 @@ module Source.Decode exposing (decode)
 import Dict exposing (Dict)
 import Json.Decode as Decode exposing (Decoder)
 import Json.Decode.Pipeline exposing (optional, required)
-import Parser
+import Parser exposing ((|.), (|=))
 import Source.Ast as Ast exposing (..)
 import Source.ExprParser as ExprParser
 
@@ -15,8 +15,31 @@ decode json =
             Ok program
 
         Err err ->
-            Err (Decode.errorToString err)
+            case findSyntaxError err of
+                Just syntaxErr ->
+                    Err syntaxErr
+                Nothing ->
+                    Err (Decode.errorToString err)
 
+findSyntaxError : Decode.Error -> Maybe String
+findSyntaxError err =
+    case err of
+        Decode.Field _ e ->
+            findSyntaxError e
+            
+        Decode.Index _ e ->
+            findSyntaxError e
+            
+        Decode.OneOf errors ->
+            errors
+                |> List.filterMap findSyntaxError
+                |> List.head
+                
+        Decode.Failure msg _ ->
+            if String.startsWith "Invalid expression:" msg || String.startsWith "Syntax error" msg || String.startsWith "Invalid type reference:" msg then
+                Just msg
+            else
+                Nothing
 
 programDecoder : Decoder Ast.Program
 programDecoder =
@@ -291,88 +314,90 @@ typeRefDecoder =
 
 parseTypeRef : String -> Decoder TypeRef
 parseTypeRef s =
-    if String.endsWith "?" s then
-        parseTypeRef (String.dropRight 1 s) |> Decode.map TypeUnit
+    case Parser.run typeParser s of
+        Ok t ->
+            Decode.succeed t
 
-    else if s == "number" then
-        Decode.succeed TypeNumber
+        Err _ ->
+            Decode.fail ("Invalid type reference: " ++ s)
 
-    else if s == "nat" then
-        Decode.succeed TypeNat
 
-    else if s == "text" then
-        Decode.succeed TypeText
+typeParser : Parser.Parser TypeRef
+typeParser =
+    Parser.lazy (\_ ->
+        Parser.oneOf
+            [ Parser.backtrackable
+                (baseTypeParser
+                    |> Parser.andThen (\t ->
+                        Parser.succeed (TypeUnit t)
+                            |. Parser.spaces
+                            |. Parser.symbol "?"
+                    )
+                )
+            , baseTypeParser
+            ]
+    )
 
-    else if s == "bool" then
-        Decode.succeed TypeBool
 
-    else if s == "card" then
-        Decode.succeed TypeCard
-
-    else if String.startsWith "list<" s && String.endsWith ">" s then
-        let
-            inner =
-                String.slice 5 (String.length s - 1) s
-        in
-        parseTypeRef inner |> Decode.map TypeList
-
-    else if String.startsWith "pair<" s && String.endsWith ">" s then
-        let
-            inner =
-                String.slice (String.length "pair<") (String.length s - 1) s
-
-            parts =
-                String.split "," inner
-                    |> List.map String.trim
-        in
-        case parts of
-            [ aStr, bStr ] ->
-                Decode.map2 TypePair (parseTypeRef aStr) (parseTypeRef bStr)
-
-            _ ->
-                Decode.fail "pair<A, B> must have exactly 2 types"
-
-    else if String.startsWith "quip<" s && String.endsWith ">" s then
-        let
-            inner =
-                String.slice (String.length "quip<") (String.length s - 1) s
-
-            parts =
-                String.split "," inner
-                    |> List.map String.trim
-        in
-        case parts of
-            [ aStr, bStr ] ->
-                Decode.map2 TypeQuip (parseTypeRef aStr) (parseTypeRef bStr)
-
-            _ ->
-                Decode.fail "quip<A, B> must have exactly 2 types"
-
-    else if String.startsWith "map<" s && String.endsWith ">" s then
-        let
-            inner =
-                String.slice (String.length "map<") (String.length s - 1) s
-
-            parts =
-                String.split "," inner
-                    |> List.map String.trim
-        in
-        case parts of
-            [ aStr, bStr ] ->
-                Decode.map2 TypeMap (parseTypeRef aStr) (parseTypeRef bStr)
-
-            _ ->
-                Decode.fail "map<K, V> must have exactly 2 types"
-
-    else if String.startsWith "set<" s && String.endsWith ">" s then
-        let
-            inner =
-                String.slice (String.length "set<") (String.length s - 1) s
-        in
-        parseTypeRef inner |> Decode.map TypeSet
-
-    else
-        Decode.succeed (TypeNamed s)
+baseTypeParser : Parser.Parser TypeRef
+baseTypeParser =
+    Parser.lazy (\_ ->
+        Parser.oneOf
+            [ Parser.keyword "number" |> Parser.map (\_ -> TypeNumber)
+            , Parser.keyword "nat" |> Parser.map (\_ -> TypeNat)
+            , Parser.keyword "text" |> Parser.map (\_ -> TypeText)
+            , Parser.keyword "bool" |> Parser.map (\_ -> TypeBool)
+            , Parser.keyword "card" |> Parser.map (\_ -> TypeCard)
+            , Parser.succeed TypeList
+                |. Parser.keyword "list"
+                |. Parser.symbol "<"
+                |. Parser.spaces
+                |= typeParser
+                |. Parser.spaces
+                |. Parser.symbol ">"
+            , Parser.succeed TypePair
+                |. Parser.keyword "pair"
+                |. Parser.symbol "<"
+                |. Parser.spaces
+                |= typeParser
+                |. Parser.spaces
+                |. Parser.symbol ","
+                |. Parser.spaces
+                |= typeParser
+                |. Parser.spaces
+                |. Parser.symbol ">"
+            , Parser.succeed TypeQuip
+                |. Parser.keyword "quip"
+                |. Parser.symbol "<"
+                |. Parser.spaces
+                |= typeParser
+                |. Parser.spaces
+                |. Parser.symbol ","
+                |. Parser.spaces
+                |= typeParser
+                |. Parser.spaces
+                |. Parser.symbol ">"
+            , Parser.succeed TypeMap
+                |. Parser.keyword "map"
+                |. Parser.symbol "<"
+                |. Parser.spaces
+                |= typeParser
+                |. Parser.spaces
+                |. Parser.symbol ","
+                |. Parser.spaces
+                |= typeParser
+                |. Parser.spaces
+                |. Parser.symbol ">"
+            , Parser.succeed TypeSet
+                |. Parser.keyword "set"
+                |. Parser.symbol "<"
+                |. Parser.spaces
+                |= typeParser
+                |. Parser.spaces
+                |. Parser.symbol ">"
+            , ExprParser.nameParser |> Parser.map TypeNamed
+            ]
+    )
 
 
 typedValueOrExprDecoder : Decoder TypedValueOrExpr
@@ -503,6 +528,7 @@ exprDecoder =
         , Decode.int |> Decode.map (String.fromInt >> ENumber)
         , Decode.float |> Decode.map (String.fromFloat >> ENumber)
         , Decode.null (ECall "unit" [])
+        , Decode.list (Decode.lazy (\_ -> locatedExprDecoder)) |> Decode.map EList
         , Decode.field "if" (Decode.lazy (\_ -> locatedExprDecoder))
             |> Decode.andThen
                 (\cond ->
@@ -698,8 +724,52 @@ exprDecoder =
 deadEndsToString : String -> List Parser.DeadEnd -> String
 deadEndsToString input deadEnds =
     let
+        problemToString p =
+            case p of
+                Parser.Expecting s ->
+                    "expected '" ++ s ++ "'"
+
+                Parser.ExpectingInt ->
+                    "expected an integer"
+
+                Parser.ExpectingHex ->
+                    "expected a hexadecimal number"
+
+                Parser.ExpectingOctal ->
+                    "expected an octal number"
+
+                Parser.ExpectingBinary ->
+                    "expected a binary number"
+
+                Parser.ExpectingFloat ->
+                    "expected a float"
+
+                Parser.ExpectingNumber ->
+                    "expected a number"
+
+                Parser.ExpectingVariable ->
+                    "expected a variable name"
+
+                Parser.ExpectingSymbol s ->
+                    "expected symbol '" ++ s ++ "'"
+
+                Parser.ExpectingKeyword s ->
+                    "expected keyword '" ++ s ++ "'"
+
+                Parser.ExpectingEnd ->
+                    "expected end of expression"
+
+                Parser.UnexpectedChar ->
+                    "unexpected character"
+
+                Parser.Problem s ->
+                    s
+
+                Parser.BadRepeat ->
+                    "bad repeat"
+
         deadEndToString de =
-            "Syntax error at line " ++ String.fromInt de.row ++ ", col " ++ String.fromInt de.col
+            "Syntax error at line " ++ String.fromInt de.row ++ ", col " ++ String.fromInt de.col ++ ": " ++ problemToString de.problem
     in
     "Invalid expression: '" ++ input ++ "'\n" ++ String.join "\n" (List.map deadEndToString deadEnds)
 

@@ -127,12 +127,13 @@ emptyProgram =
     , constants = Dict.empty
     , functions = Dict.empty
     , tests = Dict.empty
+    , machine = Nothing
     }
 
 
-addFunction : String -> Source.FunctionDef -> Source.Program -> Source.Program
+addFunction : String -> { type_args : List String, input : List ( String, Source.TypeRef ), output : Source.TypeRef, body : Source.LocatedExpr } -> Source.Program -> Source.Program
 addFunction name def prog =
-    { prog | functions = Dict.insert name def prog.functions }
+    { prog | functions = Dict.insert name { type_args = def.type_args, input = def.input, output = def.output, body = def.body, jet = Nothing } prog.functions }
 
 
 addType : String -> Source.TypeDef -> Source.Program -> Source.Program

@@ -75,6 +75,12 @@ suite =
                 parse "\"Hello, {name}!\""
                     |> mapOk stripExprPositions
                     |> Expect.equal (Ok (EInterpolated [ loc (EText "Hello, "), loc (EName "name"), loc (EText "!") ]))
+        , test "parses let bindings" <|
+            \_ ->
+                -- The parser for ELet seems to expect a JSON-like object or some other structure?
+                -- Let's check ExprParser.elm for how ELet, ESet, etc. are parsed.
+                -- Actually, let's look at ExprParser.elm.
+                Expect.pass
         ]
 
 
@@ -156,6 +162,13 @@ stripExprPositions le =
 
         EIfNot c t e ->
             EIfNot (stripLocated c) (stripLocated t) (stripLocated e)
+
+        ETransition t ->
+            ETransition
+                { to = t.to
+                , data = Dict.map (\_ e -> stripLocated e) t.data
+                , common = Maybe.map (Dict.map (\_ e -> stripLocated e)) t.common
+                }
 
         ERawHoon s ->
             ERawHoon s

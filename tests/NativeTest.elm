@@ -14,10 +14,12 @@ suite =
         [ test "Statically checks standard 'ja' library" <|
             \_ ->
                 let
+                    funcDef = { type_args = [], input = [], output = Source.TypeRawHoon "any", body = loc (Source.ECall "ja" [ loc (Source.EDict Dict.empty) ]), jet = Nothing }
                     prog =
                         { emptyProgram
-                            | functions = Dict.singleton "f" { type_args = [], input = [], output = Source.TypeRawHoon "any", body = loc (Source.ECall "ja" [ loc (Source.EDict Dict.empty) ]) }
+                            | functions = Dict.singleton "f" funcDef
                         }
+
                 in
                 Typecheck.check prog |> Expect.ok
         , test "Fails on arity mismatch for standard 'ja' library" <|
@@ -25,7 +27,7 @@ suite =
                 let
                     prog =
                         { emptyProgram
-                            | functions = Dict.singleton "f" { type_args = [], input = [], output = Source.TypeRawHoon "any", body = loc (Source.ECall "ja" [ loc (Source.ENumber "1"), loc (Source.ENumber "2") ]) }
+                            | functions = Dict.singleton "f" { type_args = [], input = [], output = Source.TypeRawHoon "any", body = loc (Source.ECall "ja" [ loc (Source.ENumber "1"), loc (Source.ENumber "2") ]), jet = Nothing }
                         }
                 in
                 Typecheck.check prog |> Expect.equal (Err ["In functions.f.return at line 0, col 0: Arity mismatch for ja: expected 1, got 2"])
@@ -35,7 +37,7 @@ suite =
                     prog =
                         { emptyProgram
                             | native = Dict.singleton "my-lib" { type_args = [], input = [ ( "x", Source.TypeNumber ) ], output = Source.TypeText }
-                            , functions = Dict.singleton "f" { type_args = [], input = [], output = Source.TypeText, body = loc (Source.ECall "my-lib" [ loc (Source.ENumber "42") ]) }
+                            , functions = Dict.singleton "f" { type_args = [], input = [], output = Source.TypeText, body = loc (Source.ECall "my-lib" [ loc (Source.ENumber "42") ]), jet = Nothing }
                         }
                 in
                 Typecheck.check prog |> Expect.ok
@@ -45,7 +47,7 @@ suite =
                     prog =
                         { emptyProgram
                             | native = Dict.singleton "my-lib" { type_args = [], input = [ ( "x", Source.TypeNumber ) ], output = Source.TypeText }
-                            , functions = Dict.singleton "f" { type_args = [], input = [], output = Source.TypeText, body = loc (Source.ECall "my-lib" [ loc (Source.EText "oops") ]) }
+                            , functions = Dict.singleton "f" { type_args = [], input = [], output = Source.TypeText, body = loc (Source.ECall "my-lib" [ loc (Source.EText "oops") ]), jet = Nothing }
                         }
                 in
                 Typecheck.check prog |> Expect.equal (Err ["In functions.f.return at line 0, col 0: Type mismatch: expected number, got text"])
@@ -69,6 +71,7 @@ emptyProgram =
     , constants = Dict.empty
     , functions = Dict.empty
     , tests = Dict.empty
+    , machine = Nothing
     }
 
 

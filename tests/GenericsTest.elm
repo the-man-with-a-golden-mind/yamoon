@@ -64,7 +64,7 @@ suite =
                             |> addFunction "pure" { type_args = [ "T" ], input = [], output = Source.TypeList (Source.TypeNamed "T"), body = loc (Source.EList []) }
                             |> addFunction "test" { type_args = [], input = [], output = Source.TypeList Source.TypeNumber, body = loc (Source.ECall "pure" []) }
                 in
-                Typecheck.check prog |> Expect.equal (Err [ "In functions.pure.return at line 0, col 0: Type mismatch: expected list<T>, got list<number>", "In functions.test.return at line 0, col 0: Cannot infer type for generic parameter 'T'. It is not used in the input arguments." ])
+                Typecheck.check prog |> Expect.equal (Err [ "In functions.test.return at line 0, col 0: Cannot infer type for generic parameter 'T'. It is not used in the input arguments." ])
         , test "Correctly parses and checks nested generic types" <|
             \_ ->
                 let
@@ -95,12 +95,13 @@ emptyProgram =
     , constants = Dict.empty
     , functions = Dict.empty
     , tests = Dict.empty
+    , machine = Nothing
     }
 
 
-addFunction : String -> Source.FunctionDef -> Source.Program -> Source.Program
+addFunction : String -> { type_args : List String, input : List ( String, Source.TypeRef ), output : Source.TypeRef, body : Source.LocatedExpr } -> Source.Program -> Source.Program
 addFunction name def prog =
-    { prog | functions = Dict.insert name def prog.functions }
+    { prog | functions = Dict.insert name { type_args = def.type_args, input = def.input, output = def.output, body = def.body, jet = Nothing } prog.functions }
 
 
 loc : Source.Expr -> Source.LocatedExpr

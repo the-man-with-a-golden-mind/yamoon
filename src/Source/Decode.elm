@@ -15,11 +15,31 @@ decode json =
             Ok program
 
         Err err ->
-            case findSyntaxError err of
-                Just syntaxErr ->
-                    Err syntaxErr
-                Nothing ->
-                    Err (Decode.errorToString err)
+            Err (cleanDecodeError err)
+
+cleanDecodeError : Decode.Error -> String
+cleanDecodeError err =
+    case findSyntaxError err of
+        Just syntaxErr ->
+            syntaxErr
+
+        Nothing ->
+            formatStructureError "root" err
+
+formatStructureError : String -> Decode.Error -> String
+formatStructureError path err =
+    case err of
+        Decode.Field f e ->
+            formatStructureError (if path == "root" then f else path ++ "." ++ f) e
+
+        Decode.Index i e ->
+            formatStructureError (path ++ "[" ++ String.fromInt i ++ "]") e
+
+        Decode.OneOf _ ->
+            "Invalid YAML structure at '" ++ path ++ "': Does not match any expected format."
+
+        Decode.Failure msg _ ->
+            "Invalid YAML structure at '" ++ path ++ "': " ++ msg
 
 findSyntaxError : Decode.Error -> Maybe String
 findSyntaxError err =
@@ -44,12 +64,12 @@ findSyntaxError err =
 programDecoder : Decoder Ast.Program
 programDecoder =
     Decode.succeed
-        (\module_ docs options imports types macros native state onLoad pokes watches scries constants functions tests ->
+        (\module_ docs options imports types macros native state onLoad pokes watches scries constants functions tests machine ->
             let
                 newOptions =
                     { options | prog_context_types = types }
             in
-            Ast.Program module_ docs newOptions imports types macros native state onLoad pokes watches scries constants functions tests
+            Ast.Program module_ docs newOptions imports types macros native state onLoad pokes watches scries constants functions tests machine
         )
         |> required "module" Decode.string
         |> optional "docs" (Decode.list Decode.string) []
@@ -66,6 +86,28 @@ programDecoder =
         |> optional "constants" (Decode.dict typedValueOrExprDecoder) Dict.empty
         |> optional "functions" (Decode.dict functionDefDecoder) Dict.empty
         |> optional "tests" (Decode.dict testDefDecoder) Dict.empty
+        |> optional "machine" (Decode.map Just machineDefDecoder) Nothing
+
+
+machineDefDecoder : Decoder MachineDef
+machineDefDecoder =
+    Decode.succeed MachineDef
+        |> required "initial"
+            (Decode.succeed (\to data -> { to = to, data = data })
+                |> required "to" Decode.string
+                |> optional "data" (Decode.dict locatedExprDecoder) Dict.empty
+            )
+        |> optional "common" (Decode.dict typeRefDecoder) Dict.empty
+        |> required "states" (Decode.dict stateConfigDecoder)
+
+
+stateConfigDecoder : Decoder StateConfig
+stateConfigDecoder =
+    Decode.succeed StateConfig
+        |> optional "data" (Decode.dict typeRefDecoder) Dict.empty
+        |> optional "pokes" (Decode.dict pokeDefDecoder) Dict.empty
+        |> optional "scries" (Decode.dict scryDefDecoder) Dict.empty
+        |> optional "watches" (Decode.dict locatedExprDecoder) Dict.empty
 
 
 optionsDecoder : Decoder Options
@@ -395,6 +437,13 @@ baseTypeParser =
                 |= typeParser
                 |. Parser.spaces
                 |. Parser.symbol ">"
+            , Parser.succeed TypeRawHoon
+                |. Parser.keyword "raw-hoon"
+                |. Parser.symbol "<"
+                |. Parser.spaces
+                |= (Parser.getChompedString (Parser.chompWhile (\c -> c /= '>')))
+                |. Parser.spaces
+                |. Parser.symbol ">"
             , ExprParser.nameParser |> Parser.map TypeNamed
             ]
     )
@@ -435,6 +484,7 @@ literalValueDecoder =
         , Decode.float |> Decode.map (String.fromFloat >> LitNumber)
         , Decode.string |> Decode.map LitText
         , Decode.bool |> Decode.map LitBool
+        , Decode.null (LitText "~")
         , Decode.list (Decode.lazy (\_ -> literalValueDecoder)) |> Decode.map LitList
         , Decode.dict (Decode.lazy (\_ -> literalValueDecoder))
             |> Decode.andThen
@@ -458,6 +508,9 @@ literalValueDecoder =
                                                     case Dict.get variantName fields of
                                                         Just (LitObject variantFields) ->
                                                             Decode.succeed (LitVariant typeName variantName variantFields)
+
+                                                        Just (LitText "~") ->
+                                                            Decode.succeed (LitVariant typeName variantName Dict.empty)
 
                                                         _ ->
                                                             Decode.succeed (LitRecord typeName fields)
@@ -487,6 +540,7 @@ functionDefDecoder =
         |> optional "input" inputListDecoder []
         |> required "output" typeRefDecoder
         |> required "return" locatedExprDecoder
+        |> optional "jet" (Decode.maybe Decode.string) Nothing
 
 
 inputListDecoder : Decoder (List ( String, TypeRef ))
@@ -541,6 +595,25 @@ exprDecoder =
                             |> required "not_else" (Decode.lazy (\_ -> locatedExprDecoder))
                         ]
                 )
+        , Decode.field "match" (Decode.lazy (\_ -> locatedExprDecoder))
+            |> Decode.andThen
+                (\target ->
+                    Decode.succeed (EMatch target)
+                        |> required "cases" (Decode.dict (Decode.lazy (\_ -> locatedExprDecoder)))
+                        |> optional "default" (Decode.map Just (Decode.lazy (\_ -> locatedExprDecoder))) Nothing
+                )
+        , Decode.field "cast" (Decode.lazy (\_ -> typeRefDecoder))
+            |> Decode.andThen
+                (\targetType ->
+                    Decode.field "value" (Decode.lazy (\_ -> locatedExprDecoder))
+                        |> Decode.map (ECast targetType)
+                )
+        , Decode.field "transition"
+            (Decode.succeed (\to data common -> ETransition { to = to, data = data, common = common })
+                |> required "to" Decode.string
+                |> optional "data" (Decode.dict (Decode.lazy (\_ -> locatedExprDecoder))) Dict.empty
+                |> optional "common" (Decode.map Just (Decode.dict (Decode.lazy (\_ -> locatedExprDecoder)))) Nothing
+            )
         , Decode.dict (Decode.lazy (\_ -> locatedExprDecoder))
             |> Decode.andThen
                 (\dict ->
@@ -576,12 +649,17 @@ exprDecoder =
                             ( Just bindingsLe, Just body ) ->
                                 case bindingsLe.expr of
                                     EDict bindings ->
-                                        case Dict.toList bindings of
-                                            [ ( name, val ) ] ->
-                                                Decode.succeed (ELet name val body)
+                                        let
+                                            nestLet : List ( String, LocatedExpr ) -> LocatedExpr -> Decoder Expr
+                                            nestLet b rest =
+                                                case b of
+                                                    [] ->
+                                                        Decode.succeed rest.expr
 
-                                            _ ->
-                                                Decode.fail "let currently supports exactly 1 binding"
+                                                    ( n, v ) :: bs ->
+                                                        nestLet bs rest |> Decode.map (ELet n v << (\e -> { pos = rest.pos, expr = e }))
+                                        in
+                                        nestLet (Dict.toList bindings) body
 
                                     _ ->
                                         Decode.fail "invalid let bindings"
@@ -594,12 +672,17 @@ exprDecoder =
                             ( Just bindingsLe, Just body ) ->
                                 case bindingsLe.expr of
                                     EDict bindings ->
-                                        case Dict.toList bindings of
-                                            [ ( name, val ) ] ->
-                                                Decode.succeed (ESet name val body)
+                                        let
+                                            nestSet : List ( String, LocatedExpr ) -> LocatedExpr -> Decoder Expr
+                                            nestSet b rest =
+                                                case b of
+                                                    [] ->
+                                                        Decode.succeed rest.expr
 
-                                            _ ->
-                                                Decode.fail "set currently supports exactly 1 binding"
+                                                    ( n, v ) :: bs ->
+                                                        nestSet bs rest |> Decode.map (ESet n v << (\e -> { pos = rest.pos, expr = e }))
+                                        in
+                                        nestSet (Dict.toList bindings) body
 
                                     _ ->
                                         Decode.fail "invalid set bindings"
@@ -622,19 +705,6 @@ exprDecoder =
 
                             _ ->
                                 Decode.fail "invalid unless/in"
-
-                    else if List.member "match" keys && List.member "cases" keys then
-                        case ( Dict.get "match" dict, Dict.get "cases" dict ) of
-                            ( Just target, Just casesLe ) ->
-                                case casesLe.expr of
-                                    EDict cases ->
-                                        Decode.succeed (EMatch target cases (Dict.get "default" dict))
-
-                                    _ ->
-                                        Decode.fail "invalid match cases"
-
-                            _ ->
-                                Decode.fail "invalid match"
 
                     else
                         case keys of

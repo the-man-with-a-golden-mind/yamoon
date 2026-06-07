@@ -1,0 +1,98 @@
+module: examples.trading_bot
+
+options:
+  target: gall
+
+types:
+  Order:
+    kind: record
+    fields:
+      id: number
+      price: number
+      amount: number
+      side: text # 'buy' or 'sell'
+
+machine:
+  initial:
+    to: Offline
+    data: { }
+
+  common:
+    balance: number
+    inventory: number
+    history: list<Order>
+
+  states:
+    Offline:
+      pokes:
+        start:
+          input: { initial_balance: number }
+          return:
+            transition:
+              to: Scanning
+              common:
+                balance: initial_balance
+                inventory: 0
+                history: ~
+
+    Scanning:
+      pokes:
+        opportunity_found:
+          input: { price: number, side: text }
+          return:
+            transition:
+              to: PlacingOrder
+              data:
+                target_price: price
+                target_side: side
+        
+        stop:
+          return:
+            transition:
+              to: Offline
+
+      scries:
+        /status:
+          output: text
+          return: "'scanning'"
+
+    PlacingOrder:
+      data:
+        target_price: number
+        target_side: text
+      
+      pokes:
+        order_filled:
+          input: { order_id: number, final_price: number, amount: number }
+          return:
+            transition:
+              to: Scanning
+              common:
+                balance:
+                  if: "target_side == 'buy'"
+                  then: "balance - (final_price * amount)"
+                  else: "balance + (final_price * amount)"
+                inventory:
+                  if: "target_side == 'buy'"
+                  then: "inventory + amount"
+                  else: "inventory - amount"
+                history: history
+        
+        cancel:
+          return:
+            transition:
+              to: Scanning
+
+      scries:
+        /status:
+          output: text
+          return: "'placing_order'"
+        /target:
+          output: number
+          return: target_price
+
+functions:
+  get_total_value:
+    input: { current_price: number, balance: number, inventory: number }
+    output: number
+    return: "balance + (inventory * current_price)"

@@ -1,0 +1,10 @@
+module: examples.simple_machine
+options: { target: gall }
+machine:
+  initial: { to: Idle, data: {} }
+  states:
+    Idle:
+      pokes:
+        ping:
+          return:
+            transition: { to: Idle }

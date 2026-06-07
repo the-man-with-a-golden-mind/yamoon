@@ -27,8 +27,20 @@ lower prog =
 
         finalArms =
             baseArms ++ gallArms
-    in
+        in
     Hoon.HoonModule prog.imports docs finalArms
+
+
+lowerStateMold : Source.Options -> Source.StateDef -> Hoon.HoonMold
+lowerStateMold opts s =
+    let
+        fields =
+            s.fields
+                |> Dict.toList
+                |> List.map (\( k, v ) -> k ++ "=" ++ moldToString (lowerTypeRef opts v))
+                |> String.join " "
+    in
+    Hoon.MRaw ("[% " ++ String.fromInt s.version ++ " " ++ fields ++ "]")
 
 
 lowerTests : Source.Program -> Hoon.HoonProgram
@@ -210,28 +222,51 @@ lowerLiteralValue val =
             lowerCellList (obj |> Dict.toList |> List.map (\( k, v ) -> loc (Hoon.HRaw (k ++ "=" ++ renderHoonExprForRaw (lowerLiteralValue v)))))
 
         Source.LitRecord t f ->
-            Hoon.HRaw ":: record literal in test"
+            lowerCellList (f |> Dict.toList |> List.map (\( k, v ) -> loc (Hoon.HRaw (k ++ "=" ++ renderHoonExprForRaw (lowerLiteralValue v)))))
 
-        Source.LitVariant t v f ->
-            Hoon.HRaw ":: variant literal in test"
+        Source.LitVariant typeName variantName fields ->
+            let
+                tagName =
+                    Hoon.HRaw ("%" ++ camelToKebab variantName)
+            in
+            if Dict.isEmpty fields then
+                tagName
+            else
+                Hoon.HCell tagName (lowerCellList (fields |> Dict.toList |> List.map (\( k, v ) -> loc (Hoon.HRaw (k ++ "=" ++ renderHoonExprForRaw (lowerLiteralValue v))))))
 
 
 lowerGall : Source.Program -> List Hoon.HoonArm
 lowerGall prog =
     let
         stateArms =
-            case prog.state of
-                Just s ->
+            case ( prog.machine, prog.state ) of
+                ( Just machine, _ ) ->
+                    [ Hoon.HoonArm "state-v0" (Hoon.HRaw (lowerMachineMold prog.options machine))
+                    , Hoon.HoonArm "state" (Hoon.HRaw "state-v0")
+                    ]
+
+                ( Nothing, Just s ) ->
                     [ Hoon.HoonArm ("state-v" ++ String.fromInt s.version) (Hoon.HRaw (moldToString (lowerStateMold prog.options s)))
                     , Hoon.HoonArm "state" (Hoon.HRaw ("state-v" ++ String.fromInt s.version))
                     ]
+
+                _ ->
+                    []
+
+        initialStateArm =
+            case prog.machine of
+                Just machine ->
+                    [ Hoon.HoonArm "initial-state" (lowerMachineInitial prog.options machine) ]
 
                 Nothing ->
                     []
 
         onInit =
-            case prog.state of
-                Just _ ->
+            case ( prog.machine, prog.state ) of
+                ( Just _, _ ) ->
+                    [ Hoon.HoonArm "on-init" (Hoon.HGate [] (Hoon.HCall "pure" [ loc (Hoon.HName "initial-state") ])) ]
+
+                ( Nothing, Just _ ) ->
                     case Dict.get "on-init" prog.functions of
                         Just _ ->
                             []
@@ -239,7 +274,7 @@ lowerGall prog =
                         Nothing ->
                             [ Hoon.HoonArm "on-init" (Hoon.HGate [] (Hoon.HCall "pure" [ loc (Hoon.HName "initialState") ])) ]
 
-                Nothing ->
+                _ ->
                     []
 
         onLoad =
@@ -251,39 +286,328 @@ lowerGall prog =
                     []
 
         onPoke =
-            if not (Dict.isEmpty prog.pokes) then
-                [ lowerOnPoke prog ]
+            case prog.machine of
+                Just machine ->
+                    [ lowerMachineOnPoke prog machine ]
 
-            else
-                []
+                Nothing ->
+                    if not (Dict.isEmpty prog.pokes) then
+                        [ lowerOnPoke prog ]
+
+                    else
+                        []
 
         onWatch =
-            if not (Dict.isEmpty prog.watches) then
-                [ lowerOnWatch prog ]
+            case prog.machine of
+                Just machine ->
+                    [ lowerMachineOnWatch prog machine ]
 
-            else
-                []
+                Nothing ->
+                    if not (Dict.isEmpty prog.watches) then
+                        [ lowerOnWatch prog ]
+
+                    else
+                        []
 
         onPeek =
-            if not (Dict.isEmpty prog.scries) then
-                [ lowerOnPeek prog ]
+            case prog.machine of
+                Just machine ->
+                    [ lowerMachineOnPeek prog machine ]
 
-            else
-                []
+                Nothing ->
+                    if not (Dict.isEmpty prog.scries) then
+                        [ lowerOnPeek prog ]
+
+                    else
+                        []
+
+        pokeHandlers =
+            prog.pokes
+                |> Dict.toList
+                |> List.map (\( name, def ) -> lowerPokeHandler prog name def)
+
+        machineHandlers =
+            case prog.machine of
+                Just machine ->
+                    machine.states
+                        |> Dict.toList
+                        |> List.map (\( stateName, config ) -> lowerMachineStateHandlers prog machine stateName config)
+                        |> List.concat
+
+                Nothing ->
+                    []
     in
-    stateArms ++ onInit ++ onLoad ++ onPoke ++ onWatch ++ onPeek
+    stateArms ++ initialStateArm ++ onInit ++ onLoad ++ onPoke ++ onWatch ++ onPeek ++ pokeHandlers ++ machineHandlers
 
 
-lowerStateMold : Source.Options -> Source.StateDef -> Hoon.HoonMold
-lowerStateMold opts s =
+lowerPokeHandler : Source.Program -> String -> Source.PokeDef -> Hoon.HoonArm
+lowerPokeHandler prog name def =
     let
-        fields =
-            s.fields
+        inputs =
+            def.input
+                |> List.map (\( k, v ) -> ( k, lowerTypeRef prog.options v ))
+
+        body =
+            lowerExpr prog.options def.body
+    in
+    Hoon.HoonArm name (Hoon.HGate inputs body)
+
+
+lowerMachineStateHandlers : Source.Program -> Source.MachineDef -> String -> Source.StateConfig -> List Hoon.HoonArm
+lowerMachineStateHandlers prog machine stateName config =
+    let
+        pokeHandlers =
+            config.pokes
+                |> Dict.toList
+                |> List.map
+                    (\( pokeName, def ) ->
+                        lowerPokeHandler prog (lowerCase stateName ++ "-" ++ pokeName) def
+                    )
+
+        scryHandlers =
+            config.scries
+                |> Dict.toList
+                |> List.map
+                    (\( scryPath, def ) ->
+                        let
+                            name =
+                                lowerCase stateName ++ "-scry-" ++ (scryPath |> String.split "/" |> String.join "-")
+                        in
+                        Hoon.HoonArm name (Hoon.HGate [] (lowerExpr prog.options def.body))
+                    )
+    in
+    pokeHandlers ++ scryHandlers
+
+
+lowerCase : String -> String
+lowerCase s =
+    String.toLower (String.left 1 s) ++ String.dropLeft 1 s
+
+
+lowerMachineMold : Source.Options -> Source.MachineDef -> String
+
+lowerMachineMold opts machine =
+    let
+        commonFields =
+            machine.common
                 |> Dict.toList
                 |> List.map (\( k, v ) -> k ++ "=" ++ moldToString (lowerTypeRef opts v))
                 |> String.join " "
+
+        variants =
+            machine.states
+                |> Dict.toList
+                |> List.map
+                    (\( name, config ) ->
+                        let
+                            variantName =
+                                "%" ++ camelToKebab name
+
+                            fields =
+                                config.data
+                                    |> Dict.toList
+                                    |> List.map (\( k, v ) -> k ++ "=" ++ moldToString (lowerTypeRef opts v))
+                                    |> String.join " "
+                        in
+                        if String.isEmpty fields then
+                            variantName
+
+                        else
+                            "[" ++ variantName ++ " " ++ fields ++ "]"
+                    )
+                |> String.join " "
     in
-    Hoon.MRaw ("[% " ++ String.fromInt s.version ++ " " ++ fields ++ "]")
+    "[%0 " ++ commonFields ++ " mode=$%(" ++ variants ++ ")]"
+
+
+lowerMachineInitial : Source.Options -> Source.MachineDef -> Hoon.HoonExpr
+lowerMachineInitial opts machine =
+    let
+        commonFields =
+            machine.common
+                |> Dict.keys
+                |> List.map (\k -> loc (Hoon.HRaw (k ++ "=* " ++ moldToString (lowerTypeRef opts (Maybe.withDefault Source.TypeNumber (Dict.get k machine.common))))))
+
+        mode =
+            let
+                tagName =
+                    Hoon.HRaw ("%" ++ camelToKebab machine.initial.to)
+
+                data =
+                    machine.initial.data
+                        |> Dict.toList
+                        |> List.map (\( k, v ) -> loc (Hoon.HRaw (k ++ "=" ++ renderHoonExprForRaw (lowerExpr opts v))))
+            in
+            if List.isEmpty data then
+                tagName
+
+            else
+                Hoon.HCell tagName (lowerCellList data)
+    in
+    Hoon.HCell (Hoon.HAtom "0") (lowerCellList (commonFields ++ [ loc (Hoon.HRaw ("mode=" ++ renderHoonExprForRaw mode)) ]))
+
+
+lowerMachineOnPoke : Source.Program -> Source.MachineDef -> Hoon.HoonArm
+lowerMachineOnPoke prog machine =
+    let
+        stateMatches =
+            machine.states
+                |> Dict.toList
+                |> List.map
+                    (\( stateName, config ) ->
+                        let
+                            pattern =
+                                "[* * %" ++ camelToKebab stateName ++ " *]"
+
+                            markMatch =
+                                config.pokes
+                                    |> Dict.toList
+                                    |> List.map
+                                        (\( pokeName, def ) ->
+                                            let
+                                                mark =
+                                                    Maybe.withDefault "tas" def.mark
+
+                                                handlerName =
+                                                    lowerCase stateName ++ "-" ++ pokeName
+
+                                                call =
+                                                    Hoon.HCall handlerName [ loc (Hoon.HRaw "q.vase") ]
+                                            in
+                                            ( "%" ++ mark, call )
+                                        )
+
+                            stateBody =
+                                if List.isEmpty markMatch then
+                                    Hoon.HRaw "on-poke:def"
+
+                                else
+                                    Hoon.HMatch (loc (Hoon.HRaw "mark")) markMatch (Just (Hoon.HRaw "on-poke:def"))
+
+                            -- Bind state fields into the subject
+                            -- mode is the last field in our state record
+                            finalBody =
+                                if Dict.isEmpty config.data then
+                                    stateBody
+
+                                else
+                                    Hoon.HLet "+*" (Hoon.HRaw "mode.state") stateBody
+                        in
+                        ( pattern, finalBody )
+                    )
+
+        body =
+            Hoon.HMatch (loc (Hoon.HRaw "state")) stateMatches (Just (Hoon.HRaw "on-poke:def"))
+    in
+    Hoon.HoonArm "on-poke" (Hoon.HGate [ ( "mark=@tas", Hoon.MAtom ), ( "vase=vase", Hoon.MRaw "vase" ) ] body)
+
+
+lowerMachineOnWatch : Source.Program -> Source.MachineDef -> Hoon.HoonArm
+lowerMachineOnWatch prog machine =
+    let
+        stateMatches =
+            machine.states
+                |> Dict.toList
+                |> List.map
+                    (\( stateName, config ) ->
+                        let
+                            pattern =
+                                "[* * %" ++ camelToKebab stateName ++ " *]"
+
+                            watchMatch =
+                                config.watches
+                                    |> Dict.toList
+                                    |> List.map
+                                        (\( path, watchBody ) ->
+                                            let
+                                                pathPattern =
+                                                    path
+                                                        |> String.split "/"
+                                                        |> List.filter (not << String.isEmpty)
+                                                        |> List.map (\s -> "%" ++ s)
+                                                        |> (\parts -> "[" ++ String.join " " parts ++ " ~]")
+                                            in
+                                            ( pathPattern, lowerExpr prog.options watchBody )
+                                        )
+
+                            stateBody =
+                                if List.isEmpty watchMatch then
+                                    Hoon.HRaw "on-watch:def"
+
+                                else
+                                    Hoon.HMatch (loc (Hoon.HRaw "path")) watchMatch (Just (Hoon.HRaw "on-watch:def"))
+
+                            finalBody =
+                                if Dict.isEmpty config.data then
+                                    stateBody
+
+                                else
+                                    Hoon.HLet "+*" (Hoon.HRaw "mode.state") stateBody
+                        in
+                        ( pattern, finalBody )
+                    )
+
+        body =
+            Hoon.HMatch (loc (Hoon.HRaw "state")) stateMatches (Just (Hoon.HRaw "on-watch:def"))
+    in
+    Hoon.HoonArm "on-watch" (Hoon.HGate [ ( "path=path", Hoon.MRaw "path" ) ] body)
+
+
+lowerMachineOnPeek : Source.Program -> Source.MachineDef -> Hoon.HoonArm
+lowerMachineOnPeek prog machine =
+    let
+        stateMatches =
+            machine.states
+                |> Dict.toList
+                |> List.map
+                    (\( stateName, config ) ->
+                        let
+                            pattern =
+                                "[* * %" ++ camelToKebab stateName ++ " *]"
+
+                            scryMatch =
+                                config.scries
+                                    |> Dict.toList
+                                    |> List.map
+                                        (\( path, def ) ->
+                                            let
+                                                pathPattern =
+                                                    path
+                                                        |> String.split "/"
+                                                        |> List.filter (not << String.isEmpty)
+                                                        |> List.map (\s -> "%" ++ s)
+                                                        |> (\parts -> "[" ++ String.join " " parts ++ " ~]")
+
+                                                handlerName =
+                                                    lowerCase stateName ++ "-scry-" ++ (path |> String.split "/" |> String.join "-")
+
+                                                scryBody =
+                                                    Hoon.HRaw ("[~ ~ %tas !>(" ++ handlerName ++ ")]")
+                                            in
+                                            ( pathPattern, scryBody )
+                                        )
+
+                            stateBody =
+                                if List.isEmpty scryMatch then
+                                    Hoon.HRaw "on-peek:def"
+
+                                else
+                                    Hoon.HMatch (loc (Hoon.HRaw "path")) scryMatch (Just (Hoon.HRaw "on-peek:def"))
+
+                            finalBody =
+                                if Dict.isEmpty config.data then
+                                    stateBody
+
+                                else
+                                    Hoon.HLet "+*" (Hoon.HRaw "mode.state") stateBody
+                        in
+                        ( pattern, finalBody )
+                    )
+
+        body =
+            Hoon.HMatch (loc (Hoon.HRaw "state")) stateMatches (Just (Hoon.HRaw "on-peek:def"))
+    in
+    Hoon.HoonArm "on-peek" (Hoon.HGate [ ( "path=path", Hoon.MRaw "path" ) ] body)
 
 
 lowerOnPoke : Source.Program -> Hoon.HoonArm
@@ -610,7 +934,7 @@ lowerLiteral opts mType val =
                         Hoon.HRaw (":: unknown union type " ++ typeName)
 
         Source.LitObject obj ->
-            lowerCellList (obj |> Dict.toList |> List.map (\( k, v ) -> loc (Hoon.HRaw (k ++ "=" ++ renderHoonExprForRaw (lowerLiteralValue v)))))
+            lowerCellList (obj |> Dict.toList |> List.map (\( k, v ) -> loc (Hoon.HRaw (k ++ "=" ++ renderHoonExprForRaw (lowerLiteral opts Nothing v)))))
 
 
 lowerCellList : List Hoon.LocatedHoonExpr -> Hoon.HoonExpr
@@ -639,11 +963,23 @@ lowerFunctions prog =
 
                     body =
                         lowerExpr prog.options def.body
+
+                    gate =
+                        if List.isEmpty def.type_args then
+                            Hoon.HGate inputs body
+
+                        else
+                            Hoon.HRaw ("|*  " ++ renderWetGateInputs inputs ++ "\n" ++ indent (renderHoonExprForRaw body))
+
+                    finalExpr =
+                        case def.jet of
+                            Just tag ->
+                                Hoon.HRaw ("~%  %" ++ tag ++ "  ..  " ++ renderHoonExprForRaw gate)
+
+                            Nothing ->
+                                gate
                 in
-                if List.isEmpty def.type_args then
-                    Hoon.HoonArm name (Hoon.HGate inputs body)
-                else
-                    Hoon.HoonArm name (Hoon.HRaw ("|*  " ++ renderWetGateInputs inputs ++ "\n" ++ indent (renderHoonExprForRaw body)))
+                Hoon.HoonArm name finalExpr
             )
 
 renderWetGateInputs : List (String, Hoon.HoonMold) -> String
@@ -844,6 +1180,44 @@ lowerExpr opts le =
 
         Source.EIfNot cond then_ else_ ->
             Hoon.HIfNot (lowerExpr opts cond) (lowerExpr opts then_) (lowerExpr opts else_)
+
+        Source.ETransition t ->
+            let
+                tagName =
+                    "%" ++ camelToKebab t.to
+
+                dataFields =
+                    t.data
+                        |> Dict.toList
+                        |> List.map (\( k, v ) -> k ++ "=" ++ renderHoonExprForRaw (lowerExpr opts v))
+                        |> String.join " "
+
+                modeExpr =
+                    if String.isEmpty dataFields then
+                        tagName
+
+                    else
+                        "[" ++ tagName ++ " " ++ dataFields ++ "]"
+
+                commonUpdates =
+                    case t.common of
+                        Just updates ->
+                            updates
+                                |> Dict.toList
+                                |> List.map (\( k, v ) -> k ++ "=" ++ renderHoonExprForRaw (lowerExpr opts v))
+                                |> String.join ", "
+
+                        Nothing ->
+                            ""
+
+                stateUpdate =
+                    if String.isEmpty commonUpdates then
+                        "state(mode " ++ modeExpr ++ ")"
+
+                    else
+                        "state(mode " ++ modeExpr ++ ", " ++ commonUpdates ++ ")"
+            in
+            Hoon.HCell (Hoon.HList []) (Hoon.HRaw stateUpdate)
 
         Source.ERawHoon s ->
             Hoon.HRaw s

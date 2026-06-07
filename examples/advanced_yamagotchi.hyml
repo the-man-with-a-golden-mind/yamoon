@@ -1,0 +1,321 @@
+module: examples.advanced_yamagotchi
+
+options:
+  target: gall
+
+types:
+  Mood:
+    kind: union
+    variants:
+      Happy: ~
+      Sad: ~
+      Sleepy: ~
+      Dead: ~
+      
+  Event:
+    kind: union
+    variants:
+      Fed: { amount: number }
+      Played: ~
+      Slept: ~
+
+  Pet:
+    kind: record
+    fields:
+      name: text
+      health: number
+      hunger: number
+      energy: number
+      mood: Mood
+      inventory: map<text, number>
+      history: list<Event>
+
+state:
+  version: 1
+  data:
+    pet: Pet
+
+constants:
+  initialState:
+    type: state
+    value:
+      pet:
+        name: "Yami"
+        health: 100
+        hunger: 0
+        energy: 100
+        mood:
+          Mood:
+            Happy: ~
+        inventory: {}
+        history: []
+
+functions:
+  # Generic helper to safely decrement an item in a map
+  useItem:
+    type_args: [K]
+    input: { inv: "map<K, number>", item: K }
+    output: "map<K, number>"
+    return:
+      let: { current: "get(inv, item)" }
+      in:
+        if: "current == ~"
+        then: inv
+        else:
+          if: "current.u > 0"
+          then: put(inv, item, "current.u - 1")
+          else: inv
+          
+  # Recursive loop to calculate a happiness modifier based on history
+  calcBonus:
+    input: { hist: list<Event> }
+    output: number
+    return:
+      loop:
+        args: { lst: hist, bonus: 0 }
+        return:
+          if: "length(lst) == 0"
+          then: bonus
+          else:
+            let: { ev: first(lst) }
+            in:
+              match: ev
+              cases:
+                Fed: recurse(rest(lst), "bonus + 5")
+                Played: recurse(rest(lst), "bonus + 10")
+                Slept: recurse(rest(lst), "bonus + 2")
+              default: recurse(rest(lst), bonus)
+
+  # Pure function to determine mood
+  evalMood:
+    input: { h: number, e: number }
+    output: Mood
+    return:
+      if: "h <= 0"
+      then: 
+        Mood:
+          Dead: ~
+      else:
+        if: "e < 20"
+        then: 
+          Mood:
+            Sleepy: ~
+        else:
+          if: "h < 50"
+          then: 
+            Mood:
+              Sad: ~
+          else: 
+            Mood:
+              Happy: ~
+
+pokes:
+  feed:
+    mark: feed-pet
+    input: { item: text }
+    return:
+      match: state.pet.mood
+      cases:
+        Dead: pure(state)
+      default:
+        let: { qty: "get(state.pet.inventory, item)" }
+        in:
+          if: "qty == ~"
+          then: pure(state)
+          else:
+            if: "qty.u == 0"
+            then: pure(state)
+            else:
+              let: 
+                new_event:
+                  Event:
+                    Fed: { amount: 20 }
+              in:
+                let: { new_inv: "useItem(state.pet.inventory, item)" }
+                in:
+                  let: { new_hunger_raw: "state.pet.hunger - 20" }
+                  in:
+                    let: { new_health_raw: "state.pet.health + 10" }
+                    in:
+                      let:
+                        capped_health:
+                          if: "new_health_raw > 100"
+                          then: 100
+                          else: new_health_raw
+                      in:
+                        let:
+                          capped_hunger:
+                            if: "new_hunger_raw < 0"
+                            then: 0
+                            else: new_hunger_raw
+                        in:
+                          pure:
+                            state:
+                              pet:
+                                name: state.pet.name
+                                health: capped_health
+                                hunger: capped_hunger
+                                energy: state.pet.energy
+                                mood: evalMood(capped_health, state.pet.energy)
+                                inventory: new_inv
+                                history: "prepend(new_event, state.pet.history)"
+
+  play:
+    mark: play-pet
+    input: {}
+    return:
+      match: state.pet.mood
+      cases:
+        Dead: pure(state)
+      default:
+        let: 
+          new_event:
+            Event:
+              Played: ~
+        in:
+          let: { new_energy: "state.pet.energy - 30" }
+          in:
+            let: { new_hunger: "state.pet.hunger + 10" }
+            in:
+              if: "new_energy <= 0"
+              then: 
+                pure:
+                  state:
+                    pet:
+                      name: state.pet.name
+                      health: state.pet.health
+                      hunger: new_hunger
+                      energy: 0
+                      mood: 
+                        Mood:
+                          Sleepy: ~
+                      inventory: state.pet.inventory
+                      history: "prepend(new_event, state.pet.history)"
+              else:
+                pure:
+                  state:
+                    pet:
+                      name: state.pet.name
+                      health: state.pet.health
+                      hunger: new_hunger
+                      energy: new_energy
+                      mood: evalMood(state.pet.health, new_energy)
+                      inventory: state.pet.inventory
+                      history: "prepend(new_event, state.pet.history)"
+
+  starve:
+    mark: starve-pet
+    input: {}
+    return:
+      match: state.pet.mood
+      cases:
+        Dead: pure(state)
+      default:
+        let: { new_health: "state.pet.health - 60" }
+        in:
+          if: "new_health <= 0"
+          then:
+            pure:
+              state:
+                pet:
+                  name: state.pet.name
+                  health: 0
+                  hunger: 100
+                  energy: 0
+                  mood: 
+                    Mood:
+                      Dead: ~
+                  inventory: state.pet.inventory
+                  history: state.pet.history
+          else:
+            pure:
+              state:
+                pet:
+                  name: state.pet.name
+                  health: new_health
+                  hunger: 100
+                  energy: state.pet.energy
+                  mood: evalMood(new_health, state.pet.energy)
+                  inventory: state.pet.inventory
+                  history: state.pet.history
+
+scries:
+  /status/mood:
+    output: Mood
+    return: state.pet.mood
+    
+  /status/health:
+    output: number
+    return: state.pet.health
+
+  /status/bonus:
+    output: number
+    return: calcBonus(state.pet.history)
+
+tests:
+  complex_lifecycle:
+    kind: scenario
+    setup: initialState
+    steps:
+      # Step 1: Initial state
+      - action: { action: "wait", duration: "~s1" }
+        expect:
+          scries: 
+            "/status/health": 100
+            "/status/mood": 
+              Mood:
+                Happy: ~
+            "/status/bonus": 0
+      
+      # Step 2: Play heavily to make Sleepy
+      - action: { action: "poke", route: "play", payload: {} }
+        expect: {}
+      - action: { action: "poke", route: "play", payload: {} }
+        expect: {}
+      - action: { action: "poke", route: "play", payload: {} }
+        expect: {}
+      - action: { action: "poke", route: "play", payload: {} }
+        expect:
+          scries: 
+            "/status/mood": 
+              Mood:
+                Sleepy: ~
+            "/status/bonus": 40
+          
+      # Step 3: Starve to make Sad
+      - action: { action: "poke", route: "starve", payload: {} }
+        expect:
+          scries: 
+            "/status/health": 40
+            "/status/mood": 
+              Mood:
+                Sad: ~
+          
+      # Step 4: Feed an apple from inventory
+      - action: { action: "poke", route: "feed", payload: { item: "apple" } }
+        expect:
+          scries: 
+            "/status/health": 50
+            "/status/mood": 
+              Mood:
+                Happy: ~
+            "/status/bonus": 45
+          
+      # Step 5: Starve to death
+      - action: { action: "poke", route: "starve", payload: {} }
+        expect:
+          scries: 
+            "/status/health": 0
+            "/status/mood": 
+              Mood:
+                Dead: ~
+          
+      # Step 6: Try to feed a dead pet (macro should prevent state change)
+      - action: { action: "poke", route: "feed", payload: { item: "apple" } }
+        expect:
+          scries: 
+            "/status/health": 0
+            "/status/mood": 
+              Mood:
+                Dead: ~
+            "/status/bonus": 45

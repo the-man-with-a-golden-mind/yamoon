@@ -20,7 +20,7 @@ A yamoon project is defined in a `.hyml` file. It organizes your code into logic
 | `watches`| `path: expr` | (Gall) Subscription handlers. |
 | `scries` | `path: { output: Type, return: ... }` | (Gall) Read interface tree. |
 | `constants`| `name: { type: Type, value: ... }` | Global values. |
-| `functions`| `name: { type_args: [...], input: {...}, output: Type, return: ... }` | Deterministic gates. |
+| `functions`| `name: { type_args: [...], input: {...}, output: Type, jet: "tag", return: ... }` | Deterministic gates. |
 | `tests` | `name: { kind: "unit", ... }` | Integrated test suite. |
 
 ---

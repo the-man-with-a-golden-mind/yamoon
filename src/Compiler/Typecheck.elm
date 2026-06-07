@@ -19,6 +19,9 @@ type Error
     | MissingTestSubject Context String
     | GenericConflict Context String Source.TypeRef Source.TypeRef
     | UnboundGeneric Context String
+    | TransitionToUnknownState Context String
+    | MissingStateData Context String String
+    | NonExhaustiveMatch Context String
 
 
 check : Source.Program -> Result (List String) ()
@@ -51,6 +54,7 @@ check prog =
             , localVars = baseLocalVars
             , typeArgs = []
             , typeBindings = Dict.empty
+            , machine = prog.machine
             , path = []
             , currentPos = { line = 0, col = 0 }
             }
@@ -63,6 +67,7 @@ check prog =
                 , checkWatches ctx prog.watches
                 , checkPokes ctx prog.pokes
                 , checkTests ctx prog.tests
+                , checkMachine ctx
                 ]
     in
     if List.isEmpty errors then
@@ -80,6 +85,7 @@ type alias Context =
     , localVars : Dict String Source.TypeRef
     , typeArgs : List String
     , typeBindings : Dict String Source.TypeRef
+    , machine : Maybe Source.MachineDef
     , path : List String
     , currentPos : Source.Pos
     }
@@ -130,6 +136,113 @@ checkPokes ctx pokes =
         |> Dict.toList
         |> List.map (\( name, def ) -> checkPoke { ctx | path = [ "pokes", name ] } def)
         |> List.concat
+
+
+checkMachine : Context -> List Error
+checkMachine ctx =
+    case ctx.machine of
+        Just machine ->
+            let
+                initialErrors =
+                    case Dict.get machine.initial.to machine.states of
+                        Just stateDef ->
+                            checkTransitionData { ctx | path = [ "machine", "initial" ] } machine.initial.to stateDef.data machine.initial.data
+
+                        Nothing ->
+                            [ TransitionToUnknownState { ctx | path = [ "machine", "initial" ] } machine.initial.to ]
+
+                statesErrors =
+                    machine.states
+                        |> Dict.toList
+                        |> List.map (\( name, config ) -> checkStateConfig { ctx | path = [ "machine", "states", name ] } machine name config)
+                        |> List.concat
+            in
+            initialErrors ++ statesErrors
+
+        Nothing ->
+            []
+
+
+checkTransitionData : Context -> String -> Dict String Source.TypeRef -> Dict String Source.LocatedExpr -> List Error
+checkTransitionData ctx stateName expectedFields providedFields =
+    let
+        missingFields =
+            Dict.keys expectedFields
+                |> List.filter (\k -> not (Dict.member k providedFields))
+                |> List.map (MissingStateData ctx stateName)
+
+        typeErrors =
+            providedFields
+                |> Dict.toList
+                |> List.map
+                    (\( k, v ) ->
+                        case Dict.get k expectedFields of
+                            Just expectedType ->
+                                case inferExprType ctx v of
+                                    Ok actualType ->
+                                        if typesEqual ctx actualType expectedType then
+                                            []
+
+                                        else
+                                            [ TypeMismatch { ctx | currentPos = v.pos } expectedType actualType ]
+
+                                    Err err ->
+                                        [ err ]
+
+                            Nothing ->
+                                []
+                    )
+                |> List.concat
+    in
+    missingFields ++ typeErrors
+
+
+checkStateConfig : Context -> Source.MachineDef -> String -> Source.StateConfig -> List Error
+checkStateConfig ctx machine name config =
+    let
+        stateLocalVars =
+            Dict.union machine.common config.data
+
+        newCtx =
+            { ctx | localVars = Dict.union stateLocalVars ctx.localVars }
+
+        pokesErrors =
+            config.pokes
+                |> Dict.toList
+                |> List.map (\( pokeName, def ) -> checkPoke { newCtx | path = ctx.path ++ [ "pokes", pokeName ] } def)
+                |> List.concat
+
+        scriesErrors =
+            config.scries
+                |> Dict.toList
+                |> List.map (\( scryPath, def ) -> checkScry { newCtx | path = ctx.path ++ [ "scries", scryPath ] } def)
+                |> List.concat
+
+        watchesErrors =
+            config.watches
+                |> Dict.toList
+                |> List.map (\( watchPath, le ) -> checkExpr { newCtx | path = ctx.path ++ [ "watches", watchPath ] } le)
+                |> List.concat
+    in
+    pokesErrors ++ scriesErrors ++ watchesErrors
+
+
+checkScry : Context -> Source.ScryDef -> List Error
+checkScry ctx def =
+    let
+        newCtx =
+            { ctx | path = ctx.path ++ [ "return" ] }
+    in
+    case inferExprType newCtx def.body of
+        Ok t ->
+            if typesEqual ctx t def.output then
+                []
+
+            else
+                [ TypeMismatch { newCtx | currentPos = def.body.pos } def.output t ]
+
+        Err err ->
+            [ err ]
 
 
 checkPoke : Context -> Source.PokeDef -> List Error
@@ -332,10 +445,34 @@ inferExprType ctx le =
         Source.EList list ->
             case list of
                 [] ->
-                    Ok (Source.TypeList Source.TypeNumber)
+                    Ok (Source.TypeList (Source.TypeRawHoon "any"))
 
-                x :: _ ->
-                    inferExprType ctx x |> Result.map Source.TypeList
+                x :: xs ->
+                    case inferExprType ctx x of
+                        Ok tx ->
+                            let
+                                checkElement : Source.LocatedExpr -> Result Error ()
+                                checkElement el =
+                                    case inferExprType ctx el of
+                                        Ok tel ->
+                                            if typesEqual ctx tel tx then
+                                                Ok ()
+
+                                            else
+                                                Err (TypeMismatch { ctx | currentPos = el.pos } tx tel)
+
+                                        Err err ->
+                                            Err err
+                            in
+                            case List.foldl (\el res -> Result.andThen (\_ -> checkElement el) res) (Ok ()) xs of
+                                Ok () ->
+                                    Ok (Source.TypeList tx)
+
+                                Err err ->
+                                    Err err
+
+                        Err err ->
+                            Err err
 
         Source.ECall name args ->
             case Dict.get name ctx.functions of
@@ -444,8 +581,11 @@ inferExprType ctx le =
 
         Source.ELoop args body ->
             let
+                inferredArgs =
+                    Dict.map (\_ expr -> Result.withDefault (Source.TypeRawHoon "any") (inferExprType ctx expr)) args
+                    
                 loopCtx =
-                    { ctx | localVars = Dict.union (Dict.map (\_ _ -> Source.TypeRawHoon "any") args) ctx.localVars }
+                    { ctx | localVars = Dict.union inferredArgs ctx.localVars }
             in
             inferExprType loopCtx body
 
@@ -507,13 +647,101 @@ inferExprType ctx le =
                 Err err ->
                     Err err
 
-        Source.EMatch target cases _ ->
-            case Dict.values cases of
-                [] ->
-                    Ok Source.TypeNumber
+        Source.EMatch target cases mDefault ->
+            case inferExprType ctx target of
+                Ok (Source.TypeNamed typeName) ->
+                    case Dict.get typeName ctx.types of
+                        Just (Source.Union variants) ->
+                            let
+                                providedVariants =
+                                    Dict.keys cases
 
-                x :: _ ->
-                    inferExprType ctx x
+                                missingVariants =
+                                    Dict.keys variants
+                                        |> List.filter (\v -> not (List.member v providedVariants))
+
+                                isExhaustive =
+                                    List.isEmpty missingVariants || mDefault /= Nothing
+                            in
+                            if not isExhaustive then
+                                Err (NonExhaustiveMatch newCtx (List.head missingVariants |> Maybe.withDefault ""))
+
+                            else
+                                let
+                                    checkBranch : String -> Source.LocatedExpr -> Result Error Source.TypeRef
+                                    checkBranch variantName body =
+                                        let
+                                            variantFields =
+                                                Dict.get variantName variants
+                                                    |> Maybe.andThen identity
+                                                    |> Maybe.withDefault Dict.empty
+
+                                            branchCtx =
+                                                { ctx | localVars = Dict.union variantFields ctx.localVars }
+                                        in
+                                        inferExprType branchCtx body
+
+                                    branches =
+                                        Dict.toList cases
+                                in
+                                case branches of
+                                    [] ->
+                                        case mDefault of
+                                            Just def ->
+                                                inferExprType ctx def
+
+                                            Nothing ->
+                                                Ok (Source.TypeRawHoon "any")
+
+                                    ( firstVar, firstBody ) :: rest ->
+                                        case checkBranch firstVar firstBody of
+                                            Ok tFirst ->
+                                                let
+                                                    checkOtherBranch : ( String, Source.LocatedExpr ) -> Result Error ()
+                                                    checkOtherBranch ( var, bod ) =
+                                                        case checkBranch var bod of
+                                                            Ok tVar ->
+                                                                if typesEqual ctx tVar tFirst then
+                                                                    Ok ()
+
+                                                                else
+                                                                    Err (TypeMismatch { ctx | currentPos = bod.pos } tFirst tVar)
+
+                                                            Err err ->
+                                                                Err err
+                                                in
+                                                case List.foldl (\b res -> Result.andThen (\_ -> checkOtherBranch b) res) (Ok ()) rest of
+                                                    Ok () ->
+                                                        case mDefault of
+                                                            Just def ->
+                                                                case inferExprType ctx def of
+                                                                    Ok tDef ->
+                                                                        if typesEqual ctx tDef tFirst then
+                                                                            Ok tFirst
+
+                                                                        else
+                                                                            Err (TypeMismatch { ctx | currentPos = def.pos } tFirst tDef)
+
+                                                                    Err err ->
+                                                                        Err err
+
+                                                            Nothing ->
+                                                                Ok tFirst
+
+                                                    Err err ->
+                                                        Err err
+
+                                            Err err ->
+                                                Err err
+
+                        _ ->
+                            Err (NotAUnion newCtx (Source.TypeNamed typeName))
+
+                Ok t ->
+                    Err (NotAUnion newCtx t)
+
+                Err err ->
+                    Err err
 
         Source.EBinary op left right ->
             case ( inferExprType ctx left, inferExprType ctx right ) of
@@ -636,6 +864,46 @@ inferExprType ctx le =
 
                 Err err ->
                     Err err
+
+        Source.ETransition t ->
+            case ctx.machine of
+                Just machine ->
+                    case Dict.get t.to machine.states of
+                        Just stateDef ->
+                            let
+                                dataErrors =
+                                    checkTransitionData ctx t.to stateDef.data t.data
+
+                                commonErrors =
+                                    case t.common of
+                                        Just commonUpdates ->
+                                            checkTransitionData ctx "common" machine.common commonUpdates
+
+                                        Nothing ->
+                                            []
+
+                                allErrors =
+                                    dataErrors ++ commonErrors
+                            in
+                            if List.isEmpty allErrors then
+                                Ok (Source.TypeRawHoon "any")
+
+                            else
+                                -- Returning the first error for simplicity in inferExprType
+                                -- though we usually want to collect all. 
+                                -- The checkMachine function collects all.
+                                case List.head allErrors of
+                                    Just err ->
+                                        Err err
+
+                                    Nothing ->
+                                        Ok (Source.TypeRawHoon "any")
+
+                        Nothing ->
+                            Err (TransitionToUnknownState newCtx t.to)
+
+                Nothing ->
+                    Ok (Source.TypeRawHoon "any")
 
         Source.ERawHoon _ ->
             Ok (Source.TypeRawHoon "any")
@@ -1200,6 +1468,15 @@ errorToString err =
 
         UnboundGeneric ctx name ->
             formatError ctx ("Cannot infer type for generic parameter '" ++ name ++ "'. It is not used in the input arguments.")
+
+        TransitionToUnknownState ctx state ->
+            formatError ctx ("Transition to unknown state: " ++ state)
+
+        MissingStateData ctx state field ->
+            formatError ctx ("Missing data fields for state " ++ state ++ ": " ++ field)
+
+        NonExhaustiveMatch ctx variant ->
+            formatError ctx ("Non-exhaustive patterns for variant match: " ++ variant)
 
 
 formatError : Context -> String -> String

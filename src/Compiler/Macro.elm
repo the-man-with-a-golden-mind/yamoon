@@ -15,7 +15,7 @@ expand prog =
             Dict.map (\_ tve -> { tve | value = expandValueOrExpr macros tve.value }) prog.constants
 
         expandedFunctions =
-            Dict.map (\_ def -> { def | body = expandLocated macros Set.empty Dict.empty def.body }) prog.functions
+            Dict.map (\_ def -> { def | body = expandLocated macros Set.empty Dict.empty def.body, jet = def.jet }) prog.functions
 
         expandedPokes =
             Dict.map (\_ def -> { def | body = expandLocated macros Set.empty Dict.empty def.body }) prog.pokes
@@ -171,6 +171,13 @@ expandExpr macros visited bindings expr =
 
         Source.EIfNot cond then_ else_ ->
             Source.EIfNot (expandLocated macros visited bindings cond) (expandLocated macros visited bindings then_) (expandLocated macros visited bindings else_)
+
+        Source.ETransition t ->
+            Source.ETransition
+                { to = t.to
+                , data = Dict.map (\_ e -> expandLocated macros visited bindings e) t.data
+                , common = Maybe.map (Dict.map (\_ e -> expandLocated macros visited bindings e)) t.common
+                }
 
         Source.ERawHoon s ->
             Source.ERawHoon s

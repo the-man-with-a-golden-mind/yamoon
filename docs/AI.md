@@ -10,7 +10,7 @@ This is a technical reference for AI subagents to author, refactor, and debug ya
 - `imports`: List of Hoon runes (e.g., `- /+  dbug`).
 - `native`: Map of lib-name -> `{ type_args: List, input: Map, output: Type }`.
 - `types`: Map of name -> `{ kind: "record", fields: Map }` or `{ kind: "union", variants: Map }`.
-- `functions`: Map of name -> `{ type_args: List, input: Map, output: Type, return: Expr }`.
+- `functions`: Map of name -> `{ type_args: List, input: Map, output: Type, jet: String, return: Expr }`.
 - `state`: (Gall only) `{ version: Int, data: Map }`.
 - `tests`: Map of name -> `UnitTest | ScenarioTest | MigrationTest`.
 

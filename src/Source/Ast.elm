@@ -19,6 +19,22 @@ type alias Program =
     , constants : Dict String TypedValueOrExpr
     , functions : Dict String FunctionDef
     , tests : Dict String TestDef
+    , machine : Maybe MachineDef
+    }
+
+
+type alias MachineDef =
+    { initial : { to : String, data : Dict String LocatedExpr }
+    , common : Dict String TypeRef
+    , states : Dict String StateConfig
+    }
+
+
+type alias StateConfig =
+    { data : Dict String TypeRef
+    , pokes : Dict String PokeDef
+    , scries : Dict String ScryDef
+    , watches : Dict String LocatedExpr
     }
 
 
@@ -170,6 +186,7 @@ type alias FunctionDef =
     , input : List ( String, TypeRef )
     , output : TypeRef
     , body : LocatedExpr
+    , jet : Maybe String
     }
 
 
@@ -208,6 +225,7 @@ type Expr
     | EBinary BinaryOp LocatedExpr LocatedExpr
     | EIf LocatedExpr LocatedExpr LocatedExpr
     | EIfNot LocatedExpr LocatedExpr LocatedExpr
+    | ETransition { to : String, data : Dict String LocatedExpr, common : Maybe (Dict String LocatedExpr) }
     | ERawHoon String
 
 

@@ -1,0 +1,25 @@
+module: examples.jet_test
+
+options:
+  target: library
+
+functions:
+  # Using %dec which is a standard Urbit jet
+  jetted_dec:
+    input: { x: number }
+    output: number
+    jet: "dec"
+    return:
+      if: x == 0
+      then: 0
+      else: x - 1
+
+tests:
+  dec_works:
+    kind: unit
+    func: jetted_dec
+    cases:
+      - input: { x: 5 }
+        expect: 4
+      - input: { x: 0 }
+        expect: 0
